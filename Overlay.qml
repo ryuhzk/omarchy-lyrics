@@ -59,7 +59,47 @@ PanelWindow {
   visible: wanted || content.opacity > 0
 
   anchors { bottom: true; left: true; right: true }
-  implicitHeight: content.implicitHeight + bottomMargin
+  implicitHeight: lineColumn.implicitHeight + bottomMargin
+
+  // What is on screen, which lags the source by one transition. Rendering
+  // `currentText` directly would swap the words instantly in the middle of the
+  // fade, so the line appears to change twice.
+  property string shownCurrent: ""
+  property string shownNext: ""
+
+  onCurrentTextChanged: {
+    // The first line of a track has nothing to cross-fade from, and neither
+    // does a track whose lyrics just finished loading; those appear with the
+    // window's own fade instead of a transition that starts from blank.
+    if (shownCurrent === "" || currentText === "") {
+      shownCurrent = currentText
+      shownNext = nextText
+      return
+    }
+    lineChange.restart()
+  }
+  onNextTextChanged: if (shownCurrent === "") shownNext = nextText
+
+  SequentialAnimation {
+    id: lineChange
+
+    // Out and upwards, the direction the words are travelling anyway.
+    ParallelAnimation {
+      NumberAnimation { target: lineColumn; property: "opacity"; to: 0; duration: 130; easing.type: Easing.InCubic }
+      NumberAnimation { target: lineColumn; property: "y"; to: -10; duration: 130; easing.type: Easing.InCubic }
+    }
+    ScriptAction {
+      script: {
+        root.shownCurrent = root.currentText
+        root.shownNext = root.nextText
+        lineColumn.y = 10
+      }
+    }
+    ParallelAnimation {
+      NumberAnimation { target: lineColumn; property: "opacity"; to: 1; duration: 260; easing.type: Easing.OutCubic }
+      NumberAnimation { target: lineColumn; property: "y"; to: 0; duration: 260; easing.type: Easing.OutCubic }
+    }
+  }
 
   color: "transparent"
   WlrLayershell.namespace: "omarchy-lyrics-overlay"
@@ -72,48 +112,58 @@ PanelWindow {
   exclusionMode: ExclusionMode.Ignore
   mask: Region {}
 
-  Column {
+  // Two layers of fade, deliberately separate. The outer one is the overlay
+  // arriving and leaving with playback; the inner one is a line handing over to
+  // the next. Binding both to the same opacity would make a line change during
+  // the appear animation cancel it half-drawn.
+  Item {
     id: content
 
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
     anchors.bottomMargin: root.bottomMargin
     width: parent.width * 0.9
-    spacing: Math.round(root.fontSize * 0.35)
+    height: lineColumn.implicitHeight
 
     opacity: root.wanted ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
 
-    Text {
+    Column {
+      id: lineColumn
       width: parent.width
-      horizontalAlignment: Text.AlignHCenter
-      text: root.currentText
-      // The line being sung wears the theme's accent, the same colour the
-      // panel fills its current row with, so switching Omarchy themes moves
-      // this with everything else rather than leaving one white line behind.
-      color: Color.accent
-      Behavior on color { ColorAnimation { duration: 160 } }
-      font.family: Style.font.family
-      font.pixelSize: root.fontSize
-      font.bold: true
-      wrapMode: Text.WordWrap
-      // Drawn over whatever the wallpaper happens to be, so it carries its own
-      // contrast rather than trusting the background to be dark.
-      style: Text.Outline
-      styleColor: Qt.rgba(0, 0, 0, 0.75)
-    }
+      spacing: Math.round(root.fontSize * 0.35)
 
-    Text {
-      width: parent.width
-      horizontalAlignment: Text.AlignHCenter
-      text: root.nextText
-      color: Qt.darker(Color.foreground, 1.7)
-      font.family: Style.font.family
-      font.pixelSize: Math.round(root.fontSize * 0.72)
-      wrapMode: Text.WordWrap
-      visible: text !== ""
-      style: Text.Outline
-      styleColor: Qt.rgba(0, 0, 0, 0.6)
+      Text {
+        width: parent.width
+        horizontalAlignment: Text.AlignHCenter
+        text: root.shownCurrent
+        // The line being sung wears the theme's accent, the same colour the
+        // panel fills its current row with, so switching Omarchy themes moves
+        // this with everything else rather than leaving one white line behind.
+        color: Color.accent
+        Behavior on color { ColorAnimation { duration: 160 } }
+        font.family: Style.font.family
+        font.pixelSize: root.fontSize
+        font.bold: true
+        wrapMode: Text.WordWrap
+        // Drawn over whatever the wallpaper happens to be, so it carries its
+        // own contrast rather than trusting the background to be dark.
+        style: Text.Outline
+        styleColor: Qt.rgba(0, 0, 0, 0.75)
+      }
+
+      Text {
+        width: parent.width
+        horizontalAlignment: Text.AlignHCenter
+        text: root.shownNext
+        color: Qt.darker(Color.foreground, 1.7)
+        font.family: Style.font.family
+        font.pixelSize: Math.round(root.fontSize * 0.72)
+        wrapMode: Text.WordWrap
+        visible: text !== ""
+        style: Text.Outline
+        styleColor: Qt.rgba(0, 0, 0, 0.6)
+      }
     }
   }
 }
