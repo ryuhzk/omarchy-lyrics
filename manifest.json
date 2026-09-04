@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "ryuhzk",
   "license": "MIT",
-  "description": "Show synchronized lyrics for the current MPRIS track in the Omarchy bar and over the desktop.",
+  "description": "Show synchronized lyrics for the current MPRIS track over the desktop, with a full panel in the bar.",
   "kinds": [
     "service",
     "bar-widget"
@@ -17,30 +17,18 @@
   },
   "barWidget": {
     "displayName": "Lyrics",
-    "description": "Current lyric line with a full synchronized lyrics panel.",
+    "description": "Playback glyph in the bar, a full synchronized lyrics panel, and the current line over the desktop.",
     "category": "Media",
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
-      "maxWidth": 360,
       "panelWidth": 520,
       "offsetMs": 0,
-      "showTrackWhenMissing": true,
       "overlayEnabled": true,
       "overlayFontSize": 30,
       "overlayBottomMargin": 96
     },
     "schema": [
-      {
-        "key": "maxWidth",
-        "type": "integer",
-        "label": "Bar width",
-        "min": 160,
-        "max": 640,
-        "step": 10,
-        "defaultValue": 360,
-        "description": "Maximum width of the lyric line in the bar."
-      },
       {
         "key": "panelWidth",
         "type": "integer",
@@ -60,12 +48,6 @@
         "step": 250,
         "defaultValue": 0,
         "description": "Positive values advance the displayed lyric; negative values delay it."
-      },
-      {
-        "key": "showTrackWhenMissing",
-        "type": "boolean",
-        "label": "Show track when lyrics are missing",
-        "defaultValue": true
       },
       {
         "key": "overlayEnabled",

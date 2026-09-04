@@ -9,24 +9,21 @@ BarWidget {
 
   readonly property var lyricsService: bar && bar.shell
     ? bar.shell.serviceFor(moduleName) : null
-  readonly property int maxLabelWidth: boundedInt(setting("maxWidth", 360), 160, 640)
   readonly property int panelWidth: boundedInt(setting("panelWidth", 520), 360, 900)
   readonly property int offsetMs: boundedInt(setting("offsetMs", 0), -10000, 10000)
-  readonly property bool showTrackWhenMissing: setting("showTrackWhenMissing", true) === true
   readonly property bool overlayEnabled: setting("overlayEnabled", true) === true
   readonly property int overlayFontSize: boundedInt(setting("overlayFontSize", 30), 14, 72)
   readonly property int overlayBottomMargin: boundedInt(setting("overlayBottomMargin", 96), 0, 600)
-  readonly property int lineIndex: lyricsService
-    ? lyricsService.lineIndexAt(lyricsService.playbackPositionMs + offsetMs) : -1
-  readonly property string lyricLine: lyricsService && lineIndex >= 0
-    ? String(lyricsService.lines[lineIndex].text || "") : ""
+  // The lyric line itself is not drawn here any more. It lived in the bar as
+  // scrolling text whose width followed the words, so every line change - four
+  // times a second while a track plays - resized this widget and relaid out
+  // every other item in the bar, and a marquee animation ran on top of that.
+  // The desktop overlay is where the words belong; the bar keeps a fixed-width
+  // glyph that says whether something is playing and opens the panel.
   readonly property string trackLabel: lyricsService
     ? [lyricsService.title, lyricsService.artist].filter(function(value) {
         return String(value || "") !== ""
       }).join(" · ") : ""
-  readonly property string displayText: lyricLine !== ""
-    ? lyricLine
-    : showTrackWhenMissing ? trackLabel : ""
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item
     ? panelLoader.item.popoutSwitchClosing === true : false
@@ -106,34 +103,6 @@ BarWidget {
       font.pixelSize: Style.font.body
     }
 
-    Item {
-      id: labelClip
-      width: Math.min(root.maxLabelWidth, label.implicitWidth)
-      height: glyph.height
-      clip: true
-      anchors.verticalCenter: parent.verticalCenter
-      visible: !root.vertical && root.displayText !== ""
-
-      Text {
-        id: label
-        anchors.verticalCenter: parent.verticalCenter
-        text: root.displayText
-        color: root.bar ? root.bar.barForeground : Color.foreground
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.body
-
-        property bool needsScroll: implicitWidth > labelClip.width
-
-        NumberAnimation on x {
-          running: label.needsScroll && !root.opened && !root.vertical
-          loops: Animation.Infinite
-          duration: Math.max(6500, label.implicitWidth * 24)
-          from: labelClip.width
-          to: -label.implicitWidth
-          easing.type: Easing.Linear
-        }
-      }
-    }
   }
 
   MouseArea {
@@ -153,7 +122,7 @@ BarWidget {
       if (wheel.angleDelta.y > 0) root.lyricsService.runAction("previous")
       else if (wheel.angleDelta.y < 0) root.lyricsService.runAction("next")
     }
-    onEntered: if (root.bar) root.bar.showTooltip(root, root.displayText || root.trackLabel)
+    onEntered: if (root.bar) root.bar.showTooltip(root, root.trackLabel)
     onExited: if (root.bar) root.bar.hideTooltip(root)
   }
 }

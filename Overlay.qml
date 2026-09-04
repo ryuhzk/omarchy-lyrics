@@ -88,7 +88,11 @@ PanelWindow {
       width: parent.width
       horizontalAlignment: Text.AlignHCenter
       text: root.currentText
-      color: Color.foreground
+      // The line being sung wears the theme's accent, the same colour the
+      // panel fills its current row with, so switching Omarchy themes moves
+      // this with everything else rather than leaving one white line behind.
+      color: Color.accent
+      Behavior on color { ColorAnimation { duration: 160 } }
       font.family: Style.font.family
       font.pixelSize: root.fontSize
       font.bold: true
