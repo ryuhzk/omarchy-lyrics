@@ -1,0 +1,33 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+check_tmp=$(mktemp -d)
+trap 'rm -rf "$check_tmp"' EXIT
+export PYTHONPYCACHEPREFIX="$check_tmp/pycache"
+
+python3 -m py_compile "$ROOT/lyrics.py" "$ROOT/tests/test_lyrics.py"
+PYTHONPATH="$ROOT" python3 -m unittest discover -s "$ROOT/tests" -v
+omarchy plugin validate "$ROOT"
+jq -e '
+  .id == "io.github.ryuhzk.lyrics"
+  and .author == "ryuhzk"
+  and .version == "0.1.0"
+  and (.kinds | index("service")) != null
+  and (.kinds | index("bar-widget")) != null
+  and .barWidget.defaultSection == "center"
+  and .barWidget.defaults.maxWidth == 360
+' "$ROOT/manifest.json" >/dev/null
+
+if rg -n '[一-龥]' "$ROOT/Service.qml" "$ROOT/BarWidget.qml" "$ROOT/Panel.qml" "$ROOT/manifest.json"; then
+  echo "User-visible plugin files must remain English-only" >&2
+  exit 1
+fi
+
+if command -v qmllint >/dev/null 2>&1; then
+  qmllint -I "${OMARCHY_PATH:-/usr/share/omarchy}/shell" \
+    "$ROOT/Service.qml" "$ROOT/BarWidget.qml" "$ROOT/Panel.qml"
+fi
+
+echo "All checks passed."

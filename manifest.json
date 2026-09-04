@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ryuhzk.lyrics",
+  "name": "Lyrics",
+  "version": "0.1.0",
+  "author": "ryuhzk",
+  "license": "MIT",
+  "description": "Show synchronized lyrics for the current MPRIS track in the Omarchy bar and over the desktop.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Lyrics",
+    "description": "Current lyric line with a full synchronized lyrics panel.",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "maxWidth": 360,
+      "panelWidth": 520,
+      "offsetMs": 0,
+      "showTrackWhenMissing": true,
+      "overlayEnabled": true,
+      "overlayFontSize": 30,
+      "overlayBottomMargin": 96
+    },
+    "schema": [
+      {
+        "key": "maxWidth",
+        "type": "integer",
+        "label": "Bar width",
+        "min": 160,
+        "max": 640,
+        "step": 10,
+        "defaultValue": 360,
+        "description": "Maximum width of the lyric line in the bar."
+      },
+      {
+        "key": "panelWidth",
+        "type": "integer",
+        "label": "Panel width",
+        "min": 360,
+        "max": 900,
+        "step": 10,
+        "defaultValue": 520,
+        "description": "Width of the full lyrics panel in layout units."
+      },
+      {
+        "key": "offsetMs",
+        "type": "integer",
+        "label": "Lyrics offset (milliseconds)",
+        "min": -10000,
+        "max": 10000,
+        "step": 250,
+        "defaultValue": 0,
+        "description": "Positive values advance the displayed lyric; negative values delay it."
+      },
+      {
+        "key": "showTrackWhenMissing",
+        "type": "boolean",
+        "label": "Show track when lyrics are missing",
+        "defaultValue": true
+      },
+      {
+        "key": "overlayEnabled",
+        "type": "boolean",
+        "label": "Desktop lyrics",
+        "defaultValue": true,
+        "description": "Show the current and next line over the desktop while a track with lyrics is playing. It is click-through and disappears when playback stops."
+      },
+      {
+        "key": "overlayFontSize",
+        "type": "integer",
+        "label": "Desktop lyric size",
+        "min": 14,
+        "max": 72,
+        "step": 2,
+        "defaultValue": 30,
+        "description": "Pixel size of the current line. The upcoming line is drawn smaller."
+      },
+      {
+        "key": "overlayBottomMargin",
+        "type": "integer",
+        "label": "Distance from the bottom",
+        "min": 0,
+        "max": 600,
+        "step": 8,
+        "defaultValue": 96,
+        "description": "How far the lyrics sit above the bottom edge of the screen."
+      }
+    ]
+  }
+}
