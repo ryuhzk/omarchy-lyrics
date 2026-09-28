@@ -13,7 +13,16 @@ BarWidget {
   readonly property int offsetMs: boundedInt(setting("offsetMs", 0), -10000, 10000)
   readonly property bool overlayEnabled: setting("overlayEnabled", true) === true
   readonly property int overlayFontSize: boundedInt(setting("overlayFontSize", 30), 14, 72)
-  readonly property int overlayBottomMargin: boundedInt(setting("overlayBottomMargin", 96), 0, 600)
+  readonly property int overlayBottomMargin: boundedInt(setting("overlayBottomMargin", 180), 0, 600)
+  readonly property string overlayPosition: setting("overlayPosition", "Bottom right") === "Bottom center" ? "center" : "right"
+  readonly property string lyricsSource: setting("lyricsSource", "NetEase") === "LRCLIB" ? "lrclib" : "netease"
+  readonly property string secondaryMode: {
+    var chosen = String(setting("secondaryLyrics", "Auto"))
+    if (chosen === "Translation") return "translation"
+    if (chosen === "Romanization") return "romanization"
+    if (chosen === "Off") return "off"
+    return "auto"
+  }
   // The lyric line itself is not drawn here any more. It lived in the bar as
   // scrolling text whose width followed the words, so every line change - four
   // times a second while a track plays - resized this widget and relaid out
@@ -33,7 +42,10 @@ BarWidget {
   Binding { target: root.lyricsService; property: "overlayEnabled"; value: root.overlayEnabled; when: root.lyricsService !== null }
   Binding { target: root.lyricsService; property: "overlayFontSize"; value: root.overlayFontSize; when: root.lyricsService !== null }
   Binding { target: root.lyricsService; property: "overlayBottomMargin"; value: root.overlayBottomMargin; when: root.lyricsService !== null }
+  Binding { target: root.lyricsService; property: "overlayPosition"; value: root.overlayPosition; when: root.lyricsService !== null }
   Binding { target: root.lyricsService; property: "overlayOffsetMs"; value: root.offsetMs; when: root.lyricsService !== null }
+  Binding { target: root.lyricsService; property: "lyricsSource"; value: root.lyricsSource; when: root.lyricsService !== null }
+  Binding { target: root.lyricsService; property: "secondaryMode"; value: root.secondaryMode; when: root.lyricsService !== null }
 
   function boundedInt(value, minimum, maximum) {
     var parsed = parseInt(String(value), 10)

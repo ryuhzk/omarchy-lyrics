@@ -28,7 +28,11 @@ PanelWindow {
 
   required property var lyricsService
   property int fontSize: 30
-  property int bottomMargin: 96
+  property int bottomMargin: 180
+  // "right" pins the lines to the bottom-right corner, right-aligned, out of the
+  // way of whatever is centred on screen; "center" is the classic karaoke line.
+  property string position: "right"
+  readonly property bool atRight: position !== "center"
 
   readonly property var lines: lyricsService ? lyricsService.lines : []
   // Resolved through the same call and the same offset the bar widget uses, so
@@ -45,6 +49,9 @@ PanelWindow {
 
   readonly property string currentText: lineAt(index)
   readonly property string nextText: lineAt(index + 1)
+  // The translation or romanization of the line being sung, directly under it.
+  readonly property string secondaryText: lyricsService && index >= 0 && index < lines.length
+    ? lyricsService.secondaryFor(lines[index]) : ""
 
   // Shown only while something is actually playing and actually has lyrics.
   // A paused track keeps its lyrics loaded, so `isPlaying` is what separates
@@ -65,6 +72,7 @@ PanelWindow {
   // `currentText` directly would swap the words instantly in the middle of the
   // fade, so the line appears to change twice.
   property string shownCurrent: ""
+  property string shownSecondary: ""
   property string shownNext: ""
 
   onCurrentTextChanged: {
@@ -73,12 +81,15 @@ PanelWindow {
     // window's own fade instead of a transition that starts from blank.
     if (shownCurrent === "" || currentText === "") {
       shownCurrent = currentText
+      shownSecondary = secondaryText
       shownNext = nextText
       return
     }
     lineChange.restart()
   }
   onNextTextChanged: if (shownCurrent === "") shownNext = nextText
+  // A setting switched mid-line takes effect at once, without a transition.
+  onSecondaryTextChanged: if (!lineChange.running) shownSecondary = secondaryText
 
   SequentialAnimation {
     id: lineChange
@@ -91,6 +102,7 @@ PanelWindow {
     ScriptAction {
       script: {
         root.shownCurrent = root.currentText
+        root.shownSecondary = root.secondaryText
         root.shownNext = root.nextText
         lineColumn.y = 10
       }
@@ -119,10 +131,12 @@ PanelWindow {
   Item {
     id: content
 
-    anchors.horizontalCenter: parent.horizontalCenter
+    anchors.horizontalCenter: root.atRight ? undefined : parent.horizontalCenter
+    anchors.right: root.atRight ? parent.right : undefined
+    anchors.rightMargin: root.atRight ? Math.round(root.fontSize * 1.6) : 0
     anchors.bottom: parent.bottom
     anchors.bottomMargin: root.bottomMargin
-    width: parent.width * 0.9
+    width: root.atRight ? Math.min(parent.width * 0.42, root.fontSize * 32) : parent.width * 0.9
     height: lineColumn.implicitHeight
 
     opacity: root.wanted ? 1 : 0
@@ -135,7 +149,7 @@ PanelWindow {
 
       Text {
         width: parent.width
-        horizontalAlignment: Text.AlignHCenter
+        horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownCurrent
         // The line being sung wears the theme's accent, the same colour the
         // panel fills its current row with, so switching Omarchy themes moves
@@ -154,7 +168,20 @@ PanelWindow {
 
       Text {
         width: parent.width
-        horizontalAlignment: Text.AlignHCenter
+        horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
+        text: root.shownSecondary
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Math.round(root.fontSize * 0.62)
+        wrapMode: Text.WordWrap
+        visible: text !== ""
+        style: Text.Outline
+        styleColor: Qt.rgba(0, 0, 0, 0.7)
+      }
+
+      Text {
+        width: parent.width
+        horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownNext
         color: Qt.darker(Color.foreground, 1.7)
         font.family: Style.font.family

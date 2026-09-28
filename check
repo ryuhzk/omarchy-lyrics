@@ -17,7 +17,8 @@ jq -e '
   and (.kinds | index("service")) != null
   and (.kinds | index("bar-widget")) != null
   and .barWidget.defaultSection == "center"
-  and .barWidget.defaults.maxWidth == 360
+  and .barWidget.defaults.lyricsSource == "NetEase"
+  and .barWidget.defaults.secondaryLyrics == "Auto"
 ' "$ROOT/manifest.json" >/dev/null
 
 if rg -n '[一-龥]' "$ROOT/Service.qml" "$ROOT/BarWidget.qml" "$ROOT/Panel.qml" "$ROOT/manifest.json"; then

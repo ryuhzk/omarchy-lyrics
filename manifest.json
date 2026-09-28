@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "ryuhzk",
   "license": "MIT",
-  "description": "Show synchronized lyrics for the current MPRIS track over the desktop, with a full panel in the bar.",
+  "description": "Show synchronized lyrics for the current MPRIS track over the desktop, with a translation or romanization under each line, and a full panel in the bar.",
   "kinds": [
     "service",
     "bar-widget"
@@ -26,7 +26,10 @@
       "offsetMs": 0,
       "overlayEnabled": true,
       "overlayFontSize": 30,
-      "overlayBottomMargin": 96
+      "overlayBottomMargin": 180,
+      "lyricsSource": "NetEase",
+      "secondaryLyrics": "Auto",
+      "overlayPosition": "Bottom right"
     },
     "schema": [
       {
@@ -67,14 +70,49 @@
         "description": "Pixel size of the current line. The upcoming line is drawn smaller."
       },
       {
+        "key": "overlayPosition",
+        "type": "enum",
+        "label": "Desktop lyrics position",
+        "options": [
+          "Bottom right",
+          "Bottom center"
+        ],
+        "defaultValue": "Bottom right",
+        "description": "Where the desktop lines sit. Bottom right keeps them out of the way of centred content."
+      },
+      {
         "key": "overlayBottomMargin",
         "type": "integer",
         "label": "Distance from the bottom",
         "min": 0,
         "max": 600,
         "step": 8,
-        "defaultValue": 96,
+        "defaultValue": 180,
         "description": "How far the lyrics sit above the bottom edge of the screen."
+      },
+      {
+        "key": "lyricsSource",
+        "type": "enum",
+        "label": "Lyrics source",
+        "options": [
+          "NetEase",
+          "LRCLIB"
+        ],
+        "defaultValue": "NetEase",
+        "description": "Asked first. NetEase Cloud Music also carries translations and romanizations; the other source is tried when this one has nothing."
+      },
+      {
+        "key": "secondaryLyrics",
+        "type": "enum",
+        "label": "Second line",
+        "options": [
+          "Auto",
+          "Translation",
+          "Romanization",
+          "Off"
+        ],
+        "defaultValue": "Auto",
+        "description": "Shown under each lyric. Auto shows the translation, or the romanization when there is none."
       }
     ]
   }

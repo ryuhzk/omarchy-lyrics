@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fetch, validate, parse, and cache LRCLIB lyrics for the Omarchy plugin."""
+"""Fetch, validate, parse, and cache synced lyrics for the Omarchy plugin.
+
+Two sources: NetEase Cloud Music, which also carries a translation and a
+romanization for many songs, and LRCLIB. The preferred one is asked first and
+the other only when it has nothing.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCHEMA_VERSION = 1
+# Part of every cache key: bumping it retires entries written by older rules,
+# such as a "not found" from before the album stopped filtering LRCLIB searches.
+CACHE_VERSION = 3
 API_BASE_URL = "https://lrclib.net/api"
+NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
+NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
+NETEASE_SEARCH_LIMIT = 10
+SOURCES = ("netease", "lrclib")
+# How far apart a translated line and its original may be stamped and still be
+# the same line; NetEase's translations are usually stamped identically.
+SECONDARY_TOLERANCE_MS = 300
 CLIENT_HEADER = "Omarchy Lyrics v0.1.0 (https://github.com/ryuhzk/omarchy-lyrics)"
 HTTP_TIMEOUT_SEC = 8
 MAX_HTTP_BYTES = 2 * 1024 * 1024
@@ -33,6 +48,15 @@ MISSING_TTL_SEC = 6 * 60 * 60
 TIMESTAMP_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 DECORATION_RE = re.compile(
     r"\s*[\[(](?:official\s+)?(?:audio|video|lyrics?|visuali[sz]er|remaster(?:ed)?(?:\s+\d{4})?)[\]) ]*$",
+    re.IGNORECASE,
+)
+
+
+# Credit lines at the top of NetEase lyrics: lyricist, composer, publisher...
+CREDIT_RE = re.compile(
+    r"^\s*(\u4f5c\u8bcd|\u4f5c\u66f2|\u7f16\u66f2|\u5236\u4f5c\u4eba|\u51fa\u54c1|\u53d1\u884c|"
+    r"\u76d1\u5236|\u7edf\u7b79|\u4f01\u5212|\u5f55\u97f3|\u6df7\u97f3|\u6bcd\u5e26|\u548c\u58f0|"
+    r"\u8bcd|\u66f2|OP|SP|Lyricist|Lyrics|Composer|Arranger|Producer|Produced|Publisher)\s*[:\uff1a]",
     re.IGNORECASE,
 )
 
@@ -126,6 +150,10 @@ def request_json(
         f"{endpoint}?{query}",
         headers={"Accept": "application/json", "Lrclib-Client": CLIENT_HEADER},
     )
+    return read_json(request, opener)
+
+
+def read_json(request: urllib.request.Request, opener: Callable[..., Any]) -> object | None:
     try:
         with opener(request, timeout=HTTP_TIMEOUT_SEC) as response:
             payload = response.read(MAX_HTTP_BYTES + 1)
@@ -218,13 +246,14 @@ def payload_from_track(track: dict[str, object] | None) -> dict[str, object]:
             "duration": finite_float(track.get("duration")),
             "sourceUrl": f"https://lrclib.net/api/get/{track_id}" if track_id is not None else "",
         },
+        "source": "lrclib",
         "instrumental": instrumental,
         "plainLyrics": plain,
         "lines": lines,
     }
 
 
-def fetch_remote(
+def fetch_lrclib(
     metadata: dict[str, object],
     api_base_url: str = API_BASE_URL,
     opener: Callable[..., Any] = urllib.request.urlopen,
@@ -254,13 +283,233 @@ def fetch_remote(
     ):
         return payload_from_track(exact)
 
+    # No album here: a library's album name rarely matches LRCLIB's, and as a
+    # filter it turned "no exact match" into "no results at all". The album
+    # still counts, lightly, in candidate_score().
     search_params: dict[str, object]
     if artist:
-        search_params = {"track_name": title, "artist_name": artist, "album_name": album}
+        search_params = {"track_name": title, "artist_name": artist}
     else:
         search_params = {"q": title}
     candidates = request_json(f"{base}/search", search_params, opener)
     return payload_from_track(choose_candidate(candidates, metadata))
+
+
+def netease_headers() -> dict[str, str]:
+    return {"Accept": "application/json", "Referer": "https://music.163.com", "User-Agent": CLIENT_HEADER}
+
+
+def netease_search(metadata: dict[str, object], opener: Callable[..., Any]) -> list[dict[str, object]]:
+    title = clean_metadata(metadata.get("title"))
+    artist = clean_metadata(metadata.get("artist"))
+    keyword = f"{title} {artist}".strip()
+    body = urllib.parse.urlencode(
+        {"s": keyword, "type": 1, "offset": 0, "limit": NETEASE_SEARCH_LIMIT}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        NETEASE_SEARCH_URL,
+        data=body,
+        headers={**netease_headers(), "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    data = read_json(request, opener)
+    if not isinstance(data, dict) or data.get("code") != 200:
+        return []
+    result = data.get("result")
+    songs = result.get("songs") if isinstance(result, dict) else None
+    return [song for song in songs[:NETEASE_SEARCH_LIMIT] if isinstance(song, dict)] if isinstance(songs, list) else []
+
+
+def is_han(text: str) -> bool:
+    return bool(text) and all("\u3400" <= character <= "\u9fff" for character in text)
+
+
+def variant_match(left: str, right: str) -> bool:
+    """Whether two Han names could be one name in traditional and simplified
+    script: same length, some characters shared (the rest differ only in form).
+    """
+    if len(left) != len(right) or not is_han(left) or not is_han(right):
+        return False
+    shared = sum(1 for a, b in zip(left, right) if a == b)
+    return shared * 3 >= len(left)
+
+
+def strip_suffix(value: str) -> str:
+    return re.sub(r"[(\uff08\u3010\[].*?[)\uff09\u3011\]]", "", value)
+
+
+def netease_score(song: dict[str, object], metadata: dict[str, object]) -> int | None:
+    """Points for a NetEase search result, or None when it is not this song.
+
+    A library tagged in traditional script and NetEase's simplified names do
+    not compare equal, so a same-length Han title counts when the duration
+    agrees closely; the duration is what keeps that from matching another song.
+    """
+    want_title = canonical(metadata.get("title"))
+    got_title = canonical(song.get("name"))
+    if not want_title or not got_title:
+        return None
+
+    duration = finite_float(metadata.get("duration"))
+    got_duration = finite_float(finite_float(song.get("duration"), maximum=3_600_000) / 1000)
+    delta = abs(duration - got_duration) if duration > 0 and got_duration > 0 else None
+    if delta is not None and delta > 20:
+        return None
+
+    if want_title == got_title:
+        points = 6
+    elif canonical(strip_suffix(clean_metadata(metadata.get("title")))) == canonical(
+            strip_suffix(clean_metadata(song.get("name")))):
+        points = 4
+    elif want_title in got_title or got_title in want_title:
+        points = 2
+    elif variant_match(want_title, got_title) and delta is not None and delta <= 3:
+        points = 5
+    else:
+        return None
+
+    want_artist = canonical(metadata.get("artist"))
+    if want_artist:
+        names = []
+        artists = song.get("artists")
+        for entry in artists if isinstance(artists, list) else []:
+            if isinstance(entry, dict):
+                names.append(canonical(entry.get("name")))
+        if any(name and (name in want_artist or want_artist in name or variant_match(name, want_artist))
+               for name in names):
+            points += 3
+
+    if delta is not None:
+        if delta <= 3:
+            points += 3
+        elif delta <= 8:
+            points += 1
+    return points
+
+
+def strip_leading_credits(lines: list[dict[str, object]]) -> list[dict[str, object]]:
+    start = 0
+    while start < len(lines) and CREDIT_RE.match(str(lines[start].get("text", ""))):
+        start += 1
+    return lines[start:]
+
+
+def attach_secondary(
+    lines: list[dict[str, object]], secondary: list[dict[str, object]], key: str
+) -> None:
+    """Give each original line the translated (or romanized) line stamped with it."""
+    if not secondary:
+        return
+    stamps = [int(entry["atMs"]) for entry in secondary]
+    position = 0
+    for line in lines:
+        at_ms = int(line["atMs"])
+        while position + 1 < len(stamps) and stamps[position + 1] <= at_ms:
+            position += 1
+        best = None
+        for candidate in (position, position + 1):
+            if 0 <= candidate < len(stamps) and abs(stamps[candidate] - at_ms) <= SECONDARY_TOLERANCE_MS:
+                if best is None or abs(stamps[candidate] - at_ms) < abs(stamps[best] - at_ms):
+                    best = candidate
+        if best is not None:
+            text = str(secondary[best].get("text", ""))
+            if text and text != line.get("text"):
+                line[key] = text
+
+
+def netease_payload(song: dict[str, object], data: object) -> dict[str, object] | None:
+    if not isinstance(data, dict) or data.get("code") != 200 or data.get("nolyric") or data.get("uncollected"):
+        return None
+
+    def section(name: str) -> str:
+        value = data.get(name)
+        return bounded_remote_text(value.get("lyric") if isinstance(value, dict) else "", MAX_LYRICS_CHARS)
+
+    lines = strip_leading_credits(parse_lrc(section("lrc")))
+    if len(lines) < 4:
+        return None
+    attach_secondary(lines, strip_leading_credits(parse_lrc(section("tlyric"))), "translation")
+    attach_secondary(lines, strip_leading_credits(parse_lrc(section("romalrc"))), "romanization")
+
+    song_id = song.get("id") if isinstance(song.get("id"), int) else None
+    artists = song.get("artists")
+    artist_names = [bounded_remote_text(entry.get("name")) for entry in artists
+                    if isinstance(entry, dict)] if isinstance(artists, list) else []
+    album = song.get("album")
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "ok": True,
+        "status": "ready",
+        "track": {
+            "id": song_id,
+            "title": bounded_remote_text(song.get("name")),
+            "artist": ", ".join(artist_names),
+            "album": bounded_remote_text(album.get("name") if isinstance(album, dict) else ""),
+            "duration": finite_float(finite_float(song.get("duration"), maximum=3_600_000) / 1000),
+            "sourceUrl": f"https://music.163.com/song?id={song_id}" if song_id is not None else "",
+        },
+        "source": "netease",
+        "instrumental": False,
+        "plainLyrics": "",
+        "lines": lines,
+    }
+
+
+def fetch_netease(
+    metadata: dict[str, object],
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> dict[str, object]:
+    if not clean_metadata(metadata.get("title")):
+        return payload_from_track(None)
+    ranked = []
+    for song in netease_search(metadata, opener):
+        points = netease_score(song, metadata)
+        if points is not None and points >= 6 and isinstance(song.get("id"), int):
+            ranked.append((points, song))
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    for _, song in ranked[:3]:
+        query = urllib.parse.urlencode({"id": song["id"], "lv": -1, "kv": -1, "tv": -1, "rv": -1})
+        request = urllib.request.Request(f"{NETEASE_LYRIC_URL}?{query}", headers=netease_headers())
+        payload = netease_payload(song, read_json(request, opener))
+        if payload is not None:
+            return payload
+    return payload_from_track(None)
+
+
+def fetch_remote(
+    metadata: dict[str, object],
+    source: str = "netease",
+    fetchers: dict[str, Callable[[dict[str, object]], dict[str, object]]] | None = None,
+) -> dict[str, object]:
+    """Ask the preferred source, then the other.
+
+    Timed lyrics win: plain text from the first source is kept only until the
+    other has been asked, since without timestamps nothing can follow the song
+    on the desktop. A source that cannot be reached does not hide an answer the
+    other one has.
+    """
+    fetchers = fetchers or {"netease": fetch_netease, "lrclib": fetch_lrclib}
+    order = [source] + [name for name in SOURCES if name != source] if source in SOURCES else list(SOURCES)
+    first_error: LyricsError | None = None
+    plain: dict[str, object] | None = None
+    miss: dict[str, object] | None = None
+    for name in order:
+        try:
+            payload = fetchers[name](metadata)
+        except LyricsError as error:
+            first_error = first_error or error
+            continue
+        if payload.get("status") == "instrumental" or (payload.get("status") == "ready" and payload.get("lines")):
+            return payload
+        if payload.get("status") == "ready":
+            plain = plain or payload
+        else:
+            miss = miss or payload
+    if plain is not None:
+        return plain
+    if miss is not None:
+        return miss
+    raise first_error or LyricsError("Could not reach the lyrics service")
 
 
 def cache_root(override: str = "") -> Path:
@@ -270,9 +519,11 @@ def cache_root(override: str = "") -> Path:
     return base / "omarchy-lyrics"
 
 
-def cache_key(metadata: dict[str, object]) -> str:
+def cache_key(metadata: dict[str, object], source: str = "netease") -> str:
     stable = json.dumps(
         {
+            "version": CACHE_VERSION,
+            "source": source,
             "title": clean_metadata(metadata.get("title")),
             "artist": clean_metadata(metadata.get("artist")),
             "album": clean_metadata(metadata.get("album")),
@@ -332,16 +583,17 @@ def fetch_with_cache(
     metadata: dict[str, object],
     cache_directory: Path,
     refresh: bool = False,
-    fetcher: Callable[[dict[str, object]], dict[str, object]] = fetch_remote,
+    fetcher: Callable[..., dict[str, object]] = fetch_remote,
+    source: str = "netease",
 ) -> dict[str, object]:
-    path = cache_directory / f"{cache_key(metadata)}.json"
+    path = cache_directory / f"{cache_key(metadata, source)}.json"
     if not refresh:
         cached = read_cache(path)
         if cached is not None:
             result = dict(cached)
             result["cached"] = True
             return result
-    result = fetcher(metadata)
+    result = fetcher(metadata, source)
     write_cache(path, result)
     result = dict(result)
     result["cached"] = False
@@ -358,6 +610,8 @@ def parser() -> argparse.ArgumentParser:
     fetch.add_argument("--duration", type=float, default=0)
     fetch.add_argument("--cache-dir", default="")
     fetch.add_argument("--refresh", action="store_true")
+    fetch.add_argument("--source", choices=SOURCES, default="netease",
+                       help="Source asked first; the other is the fallback")
     return root
 
 
@@ -370,7 +624,8 @@ def main(arguments: list[str] | None = None) -> int:
         "duration": finite_float(options.duration),
     }
     try:
-        result = fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh)
+        result = fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh,
+                                  source=options.source)
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 0
     except LyricsError as error:

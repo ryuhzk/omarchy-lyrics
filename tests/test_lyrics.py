@@ -118,7 +118,7 @@ class LyricsTests(unittest.TestCase):
     def test_cache_round_trip_and_refresh(self):
         calls = []
 
-        def fetcher(metadata):
+        def fetcher(metadata, source="netease"):
             calls.append(metadata)
             return {
                 "schemaVersion": 1,
@@ -139,6 +139,115 @@ class LyricsTests(unittest.TestCase):
         self.assertTrue(second["cached"])
         self.assertFalse(third["cached"])
         self.assertEqual(len(calls), 2)
+
+
+# Traditional-script library tags against NetEase's simplified names.
+TITLE_T = "\u98c4\u96ea"            # piao xue, traditional
+TITLE_S = "\u98d8\u96ea"            # piao xue, simplified
+ARTIST_T = "\u9673\u6167\u5afb"    # traditional
+ARTIST_S = "\u9648\u6167\u5a34"    # simplified
+OTHER_TITLE = "\u6625\u5929"         # an unrelated two-character title
+
+
+def song(song_id, name, artist, seconds):
+    return {"id": song_id, "name": name, "artists": [{"name": artist}], "album": {"name": "A"},
+            "duration": int(seconds * 1000)}
+
+
+class NeteaseTests(unittest.TestCase):
+    metadata = {"title": TITLE_T, "artist": ARTIST_T, "album": "Library album", "duration": 236.8}
+
+    def test_traditional_tags_match_simplified_names_when_the_duration_agrees(self):
+        points = lyrics.netease_score(song(1, TITLE_S, ARTIST_S, 237), self.metadata)
+        self.assertIsNotNone(points)
+        self.assertGreaterEqual(points, 6)
+
+    def test_a_same_length_title_needs_the_duration_to_agree(self):
+        self.assertIsNone(lyrics.netease_score(song(2, OTHER_TITLE, ARTIST_S, 237), self.metadata))
+        self.assertIsNone(lyrics.netease_score(song(3, TITLE_S, ARTIST_S, 300), self.metadata))
+
+    def test_translation_and_romanization_attach_to_their_lines(self):
+        data = {
+            "code": 200,
+            "lrc": {"lyric": "[00:01.00]Lyricist: Someone\n[00:02.00]one\n[00:03.00]two\n"
+                             "[00:04.00]three\n[00:05.00]four\n"},
+            "tlyric": {"lyric": "[00:02.10]uno\n[00:04.00]tres\n"},
+            "romalrc": {"lyric": "[00:03.00]ni\n"},
+        }
+        payload = lyrics.netease_payload(song(7, "Song", "Artist", 100), data)
+        self.assertEqual([line["text"] for line in payload["lines"]], ["one", "two", "three", "four"])
+        self.assertEqual(payload["lines"][0]["translation"], "uno")
+        self.assertEqual(payload["lines"][2]["translation"], "tres")
+        self.assertNotIn("translation", payload["lines"][1])
+        self.assertEqual(payload["lines"][1]["romanization"], "ni")
+        self.assertEqual(payload["source"], "netease")
+        self.assertIn("music.163.com/song?id=7", payload["track"]["sourceUrl"])
+
+    def test_too_few_lines_is_not_lyrics(self):
+        data = {"code": 200, "lrc": {"lyric": "[00:01.00]pure music, enjoy\n"}}
+        self.assertIsNone(lyrics.netease_payload(song(8, "Song", "Artist", 100), data))
+
+    def test_preferred_source_first_and_the_other_as_fallback(self):
+        ready = {"status": "ready", "lines": [{"atMs": 0, "text": "x"}]}
+        miss = {"status": "not_found", "lines": []}
+        asked = []
+
+        def netease(metadata):
+            asked.append("netease")
+            return miss
+
+        def lrclib(metadata):
+            asked.append("lrclib")
+            return ready
+
+        self.assertIs(lyrics.fetch_remote(self.metadata, "netease", {"netease": netease, "lrclib": lrclib}), ready)
+        self.assertEqual(asked, ["netease", "lrclib"])
+        asked.clear()
+        lyrics.fetch_remote(self.metadata, "lrclib", {"netease": netease, "lrclib": lrclib})
+        self.assertEqual(asked, ["lrclib"])
+
+    def test_timed_lyrics_from_the_fallback_beat_plain_text_from_the_first(self):
+        plain = {"status": "ready", "lines": [], "plainLyrics": "words"}
+        timed = {"status": "ready", "lines": [{"atMs": 0, "text": "words"}]}
+        self.assertIs(lyrics.fetch_remote(self.metadata, "lrclib",
+                                          {"lrclib": lambda m: plain, "netease": lambda m: timed}), timed)
+        miss = {"status": "not_found", "lines": []}
+        self.assertIs(lyrics.fetch_remote(self.metadata, "lrclib",
+                                          {"lrclib": lambda m: plain, "netease": lambda m: miss}), plain)
+
+    def test_an_unreachable_source_does_not_hide_the_other(self):
+        def down(metadata):
+            raise lyrics.LyricsError("Could not reach the lyrics service")
+
+        ready = {"status": "ready", "lines": []}
+        self.assertIs(lyrics.fetch_remote(self.metadata, "netease", {"netease": down, "lrclib": lambda m: ready}), ready)
+        with self.assertRaises(lyrics.LyricsError):
+            lyrics.fetch_remote(self.metadata, "netease", {"netease": down, "lrclib": down})
+
+
+class LrclibSearchTests(unittest.TestCase):
+    def test_search_does_not_filter_by_album(self):
+        urls = []
+
+        def opener(request, timeout):
+            urls.append(request.full_url)
+            return FakeResponse([] if "/search" in request.full_url else None)
+
+        def not_found_get(request, timeout):
+            urls.append(request.full_url)
+            if "/get" in request.full_url:
+                raise urllib.error.HTTPError(request.full_url, 404, "missing", {}, None)
+            return FakeResponse([])
+
+        lyrics.fetch_lrclib({"title": "Song", "artist": "Artist", "album": "Album", "duration": 100},
+                            opener=not_found_get)
+        search = [url for url in urls if "/search" in url]
+        self.assertEqual(len(search), 1)
+        self.assertNotIn("album_name", search[0])
+
+    def test_cache_keys_differ_by_source(self):
+        metadata = {"title": "Song", "artist": "Artist", "duration": 100}
+        self.assertNotEqual(lyrics.cache_key(metadata, "netease"), lyrics.cache_key(metadata, "lrclib"))
 
 
 if __name__ == "__main__":

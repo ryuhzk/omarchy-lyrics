@@ -214,7 +214,10 @@ Panel {
               required property int index
               required property var modelData
               width: ListView.view.width
-              height: lyricText.implicitHeight + Style.space(14)
+              readonly property string secondary: root.lyricsService
+                ? root.lyricsService.secondaryFor(modelData) : ""
+              height: lyricText.implicitHeight + (secondaryText.visible
+                ? secondaryText.implicitHeight + Style.space(2) : 0) + Style.space(14)
               radius: Style.space(7)
               color: index === root.activeLineIndex
                 ? Style.selectedFillFor(root.foreground, Color.accent) : "transparent"
@@ -223,7 +226,8 @@ Panel {
                 id: lyricText
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.top: parent.top
+                anchors.topMargin: Style.space(7)
                 anchors.leftMargin: Style.space(12)
                 anchors.rightMargin: Style.space(12)
                 text: String(lyricRow.modelData.text || "")
@@ -233,6 +237,24 @@ Panel {
                 font.pixelSize: lyricRow.index === root.activeLineIndex
                   ? Style.font.subtitle : Style.font.body
                 font.bold: lyricRow.index === root.activeLineIndex
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                id: secondaryText
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: lyricText.bottom
+                anchors.topMargin: Style.space(2)
+                anchors.leftMargin: Style.space(12)
+                anchors.rightMargin: Style.space(12)
+                visible: text !== ""
+                text: lyricRow.secondary
+                color: root.foreground
+                opacity: lyricRow.index === root.activeLineIndex ? 0.8 : 0.45
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
               }

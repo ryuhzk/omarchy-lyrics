@@ -12,10 +12,16 @@ Item {
   // it already does for the panel.
   property bool overlayEnabled: true
   property int overlayFontSize: 30
-  property int overlayBottomMargin: 96
+  property int overlayBottomMargin: 180
+  property string overlayPosition: "right"
   // The user's manual sync correction, shared with the bar so the overlay can
   // never show a different line than the bar does.
   property int overlayOffsetMs: 0
+  // Which source is asked first ("netease" or "lrclib"), and what the line
+  // under each lyric shows: "auto" (the translation, or the romanization when
+  // there is none), "translation", "romanization" or "off".
+  property string lyricsSource: "netease"
+  property string secondaryMode: "auto"
   property int playerRevision: 0
   property int requestSerial: 0
   property var queuedRequest: null
@@ -61,6 +67,19 @@ Item {
   readonly property int currentLineIndex: lineIndexAt(playbackPositionMs)
   readonly property string currentLine: currentLineIndex >= 0 && currentLineIndex < lines.length
     ? String(lines[currentLineIndex].text || "") : ""
+
+  // The second line for a lyric: a translation to read the meaning, or a
+  // romanization to sing along to, as the setting asks.
+  function secondaryFor(line) {
+    if (!line || secondaryMode === "off") return ""
+    var translation = String(line.translation || "")
+    var romanization = String(line.romanization || "")
+    if (secondaryMode === "translation") return translation
+    if (secondaryMode === "romanization") return romanization
+    return translation !== "" ? translation : romanization
+  }
+
+  onLyricsSourceChanged: requestLyrics(false)
 
   function playerKey(player) {
     if (!player) return ""
@@ -172,7 +191,8 @@ Item {
       "--title", request.title,
       "--artist", request.artist,
       "--album", request.album,
-      "--duration", String(Math.max(0, Number(request.duration) || 0))
+      "--duration", String(Math.max(0, Number(request.duration) || 0)),
+      "--source", lyricsSource === "lrclib" ? "lrclib" : "netease"
     ]
     if (request.refresh) command.push("--refresh")
     fetchProcess.command = command
@@ -196,7 +216,9 @@ Item {
         if (!line || !isFinite(Number(line.atMs))) continue
         safeLines.push({
           atMs: Math.max(0, Math.round(Number(line.atMs))),
-          text: String(line.text || "").slice(0, 4096)
+          text: String(line.text || "").slice(0, 4096),
+          translation: String(line.translation || "").slice(0, 4096),
+          romanization: String(line.romanization || "").slice(0, 4096)
         })
       }
       lines = safeLines
@@ -301,6 +323,7 @@ Item {
       lyricsService: root
       fontSize: root.overlayFontSize
       bottomMargin: root.overlayBottomMargin
+      position: root.overlayPosition
     }
   }
 
