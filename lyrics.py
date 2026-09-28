@@ -35,7 +35,7 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
@@ -751,7 +751,8 @@ def fetch_remote(
     on the desktop. A source that cannot be reached does not hide an answer the
     other one has.
     """
-    if fetchers is None:
+    live = fetchers is None
+    if live:
         library = fetch_jellyfin(jellyfin_item_for(metadata))
         if library is not None and library.get("lines"):
             return enrich_from_netease(library, metadata)
@@ -766,7 +767,15 @@ def fetch_remote(
         except LyricsError as error:
             first_error = first_error or error
             continue
-        if payload.get("status") == "instrumental" or (payload.get("status") == "ready" and payload.get("lines")):
+        if payload.get("status") == "instrumental":
+            return payload
+        if payload.get("status") == "ready" and payload.get("lines"):
+            # LRCLIB carries neither translation nor romanization, and a track
+            # tagged with an English title ("Sky" for 海闊天空) is not found on
+            # NetEase by name; its words still are.
+            lines = payload["lines"]
+            if live and not any(line.get("translation") or line.get("romanization") for line in lines):
+                return enrich_from_netease(payload, metadata)
             return payload
         if payload.get("status") == "ready":
             plain = plain or payload
