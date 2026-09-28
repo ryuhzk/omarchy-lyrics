@@ -877,6 +877,161 @@ def fetch_with_cache(
     return result
 
 
+# Readings over the words ----------------------------------------------------
+#
+# A romanization is one space-separated syllable per sound. Chinese has one per
+# character, so the two simply pair up. Japanese kanji have any number, but the
+# kana around them have exactly one each and a known spelling, so they pin the
+# syllables down and each run of kanji takes whatever lies between them.
+
+HAN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿々〆]")
+KANA_READINGS: dict[str, tuple[str, ...]] = {}
+for _row in (
+    "あa いi うu えe おo かka きki くku けke こko がga ぎgi ぐgu げge ごgo "
+    "さsa しshi,si すsu せse そso ざza じji,zi ずzu ぜze ぞzo "
+    "たta ちchi,ti つtsu,tu てte とto だda ぢji,di づzu,du でde どdo "
+    "なna にni ぬnu ねne のno はha,wa ひhi ふfu,hu へhe,e ほho "
+    "ばba びbi ぶbu べbe ぼbo ぱpa ぴpi ぷpu ぺpe ぽpo まma みmi むmu めme もmo "
+    "やya ゆyu よyo らra りri るru れre ろro わwa をwo,o んn,nn,m ゔvu "
+    "ぁa ぃi ぅu ぇe ぉo ゃya ゅyu ょyo ゎwa"
+).split():
+    KANA_READINGS[_row[0]] = tuple(_row[1:].split(","))
+SMALL_Y = {"ゃ": "a", "ゅ": "u", "ょ": "o"}
+SMALL_VOWELS = {"ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o"}
+MAX_KANJI_SYLLABLES = 4
+
+
+def hiragana(character: str) -> str:
+    code = ord(character)
+    return chr(code - 0x60) if 0x30A1 <= code <= 0x30F6 else character
+
+
+def kana_readings(key: str) -> set[str]:
+    """The ways a romanization may spell one mora: a kana, a kana with a small
+    ya/yu/yo or vowel after it, or either behind a small tsu."""
+    if key.startswith("っ"):
+        rest = kana_readings(key[1:])
+        return {word[0] + word for word in rest if word[0] not in "aeiou"} | {"t" + word for word in rest if word.startswith("ch")}
+    if len(key) == 1:
+        return set(KANA_READINGS.get(key, ()))
+    head, tail = key[0], key[1:]
+    readings = set()
+    for base in KANA_READINGS.get(head, ()):
+        if tail in SMALL_Y and base.endswith("i"):
+            stem = base[:-1]
+            readings.add(stem + "y" + SMALL_Y[tail])
+            if stem.endswith("h") or stem == "j":
+                readings.add(stem + SMALL_Y[tail])
+        elif tail in SMALL_VOWELS:
+            readings.add(base[:-1] + SMALL_VOWELS[tail])
+            readings.add(base[:-1] + "w" + SMALL_VOWELS[tail])
+    return readings
+
+
+def reading_units(text: str, group_han: bool) -> list[list[str]]:
+    """Split a line into [surface, kind, key]: han, kana, long (a lengthening
+    mark or a trailing small tsu, which may or may not be spelled), latin, or
+    gap (spaces and punctuation, never spelled)."""
+    units: list[list[str]] = []
+    for character in text:
+        key = hiragana(character)
+        last = units[-1] if units else None
+        if HAN_RE.match(character):
+            if group_han and last and last[1] == "han":
+                last[0] += character
+                last[2] += character
+            else:
+                units.append([character, "han", character])
+        elif key in KANA_READINGS or key == "っ":
+            if last and last[1] == "kana" and (key in SMALL_Y or key in SMALL_VOWELS or last[2] == "っ"):
+                last[0] += character
+                last[2] += key
+            else:
+                units.append([character, "kana", key])
+        elif character == "ー" and last:
+            units.append([character, "long", key])
+        elif character.isascii() and character.isalnum():
+            if last and last[1] == "latin":
+                last[0] += character
+            else:
+                units.append([character, "latin", character.lower()])
+        elif last and last[1] == "gap":
+            last[0] += character
+        else:
+            units.append([character, "gap", ""])
+    for unit in units:
+        if unit[1] == "kana" and unit[2] == "っ":
+            unit[1] = "long"
+    return units
+
+
+def ruby_segments(text: object, romanization: object) -> list[list[str]] | None:
+    """Pair each part of a line with the syllables that spell it, or None when
+    they cannot be paired with confidence."""
+    line = str(text or "")
+    tokens = [re.sub(r"[^a-z]", "", token.lower()) for token in str(romanization or "").split()]
+    tokens = [token for token in tokens if token]
+    if not line or not tokens or len(line) > 120 or len(tokens) > 120:
+        return None
+    japanese = any(hiragana(character) in KANA_READINGS for character in line)
+    units = reading_units(line, group_han=japanese)
+    sounding = sum(1 for unit in units if unit[1] in ("han", "kana", "latin"))
+    if sounding == 0:
+        return None
+    count, width = len(units), len(tokens)
+    infinity = float("inf")
+    # cost[i][j]: fewest mismatches pairing the first i units with j syllables.
+    cost = [[infinity] * (width + 1) for _ in range(count + 1)]
+    step: list[list[tuple[int, int] | None]] = [[None] * (width + 1) for _ in range(count + 1)]
+    cost[0][0] = 0
+    for index, (_, kind, key) in enumerate(units):
+        for used in range(width + 1):
+            here = cost[index][used]
+            if here == infinity:
+                continue
+            options: list[tuple[int, float]] = []
+            if kind == "gap":
+                options.append((0, 0))
+            elif kind == "long":
+                options += [(0, 0), (1, 0.5)]
+            elif kind == "kana":
+                options.append((1, 0 if used < width and tokens[used] in kana_readings(key) else 1))
+            elif kind == "latin":
+                options += [(1, 0 if used < width and tokens[used][0] == key[0] else 1), (0, 1)]
+            else:
+                most = MAX_KANJI_SYLLABLES * len(key) if japanese else 1
+                options += [(taken, 0) for taken in range(1, most + 1)]
+            for taken, penalty in options:
+                if used + taken > width:
+                    continue
+                if here + penalty < cost[index + 1][used + taken]:
+                    cost[index + 1][used + taken] = here + penalty
+                    step[index + 1][used + taken] = (used, taken)
+    if cost[count][width] > max(1, sounding // 8):
+        return None
+    segments: list[list[str]] = []
+    used = width
+    for index in range(count, 0, -1):
+        previous, taken = step[index][used]  # type: ignore[misc]
+        surface, kind, _ = units[index - 1]
+        separator = "" if japanese else " "
+        segments.append([surface, separator.join(tokens[previous:previous + taken])])
+        used = previous
+    segments.reverse()
+    return segments if len(segments) > 1 else None
+
+
+def add_ruby(payload: dict[str, object]) -> dict[str, object]:
+    lines = payload.get("lines")
+    for line in lines if isinstance(lines, list) else []:
+        if isinstance(line, dict) and line.get("romanization"):
+            segments = ruby_segments(line.get("text"), line.get("romanization"))
+            if segments:
+                line["ruby"] = segments
+    return payload
+
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     subparsers = root.add_subparsers(dest="command", required=True)
@@ -904,8 +1059,8 @@ def main(arguments: list[str] | None = None) -> int:
         "itemId": options.item_id.lower() if ITEM_ID_RE.fullmatch(options.item_id.lower()) else "",
     }
     try:
-        result = fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh,
-                                  source=options.source)
+        result = add_ruby(fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh,
+                                           source=options.source))
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 0
     except LyricsError as error:

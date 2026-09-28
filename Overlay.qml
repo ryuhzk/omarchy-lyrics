@@ -52,6 +52,12 @@ PanelWindow {
   // The translation or romanization of the line being sung, directly under it.
   readonly property string secondaryText: lyricsService && index >= 0 && index < lines.length
     ? lyricsService.secondaryFor(lines[index]) : ""
+  // Each syllable of the romanization over the characters it spells, when the
+  // backend could pair them; then only the translation is left for underneath.
+  readonly property var rubyPairs: lyricsService && index >= 0 && index < lines.length
+    ? lyricsService.rubyFor(lines[index]) : []
+  readonly property string besideRubyText: lyricsService && index >= 0 && index < lines.length
+    ? lyricsService.secondaryBesideRuby(lines[index]) : ""
 
   // Shown only while something is actually playing and actually has lyrics.
   // A paused track keeps its lyrics loaded, so `isPlaying` is what separates
@@ -73,6 +79,11 @@ PanelWindow {
   // fade, so the line appears to change twice.
   property string shownCurrent: ""
   property string shownSecondary: ""
+  property var shownRuby: []
+  property string shownBesideRuby: ""
+  // A line whose readings would not fit on one row is drawn plainly, with the
+  // romanization underneath as before.
+  readonly property bool rubyShown: shownRuby.length > 0 && rubyRow.implicitWidth <= lineColumn.width
   property string shownNext: ""
 
   onCurrentTextChanged: {
@@ -82,6 +93,8 @@ PanelWindow {
     if (shownCurrent === "" || currentText === "") {
       shownCurrent = currentText
       shownSecondary = secondaryText
+      shownRuby = rubyPairs
+      shownBesideRuby = besideRubyText
       shownNext = nextText
       return
     }
@@ -90,6 +103,8 @@ PanelWindow {
   onNextTextChanged: if (shownCurrent === "") shownNext = nextText
   // A setting switched mid-line takes effect at once, without a transition.
   onSecondaryTextChanged: if (!lineChange.running) shownSecondary = secondaryText
+  onRubyPairsChanged: if (!lineChange.running) shownRuby = rubyPairs
+  onBesideRubyTextChanged: if (!lineChange.running) shownBesideRuby = besideRubyText
 
   SequentialAnimation {
     id: lineChange
@@ -103,6 +118,8 @@ PanelWindow {
       script: {
         root.shownCurrent = root.currentText
         root.shownSecondary = root.secondaryText
+        root.shownRuby = root.rubyPairs
+        root.shownBesideRuby = root.besideRubyText
         root.shownNext = root.nextText
         lineColumn.y = 10
       }
@@ -153,10 +170,53 @@ PanelWindow {
       // invisible where the wallpaper already contrasts and just enough where
       // it does not.
 
+      Row {
+        id: rubyRow
+
+        x: root.atRight ? parent.width - width : Math.round((parent.width - width) / 2)
+        visible: root.rubyShown
+
+        Repeater {
+          model: root.shownRuby
+
+          Column {
+            id: pair
+
+            required property var modelData
+            leftPadding: Math.round(root.fontSize * 0.05)
+            rightPadding: leftPadding
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              height: Math.round(root.fontSize * 0.62)
+              text: pair.modelData[1]
+              color: Qt.alpha(Color.accent, 0.8)
+              font.family: Style.font.family
+              font.pixelSize: Math.round(root.fontSize * 0.42)
+              verticalAlignment: Text.AlignBottom
+              style: Text.Raised
+              styleColor: Qt.alpha(Color.background, 0.5)
+            }
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              text: pair.modelData[0]
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: root.fontSize
+              font.weight: Font.DemiBold
+              style: Text.Raised
+              styleColor: Qt.alpha(Color.background, 0.5)
+            }
+          }
+        }
+      }
+
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownCurrent
+        visible: !root.rubyShown
         // The line being sung wears the theme's accent, the same colour the
         // panel fills its current row with, so switching Omarchy themes moves
         // this with everything else rather than leaving one white line behind.
@@ -174,7 +234,7 @@ PanelWindow {
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
-        text: root.shownSecondary
+        text: root.rubyShown ? root.shownBesideRuby : root.shownSecondary
         color: Qt.alpha(Color.accent, 0.8)
         font.family: Style.font.family
         font.pixelSize: Math.round(root.fontSize * 0.55)

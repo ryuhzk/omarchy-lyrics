@@ -87,6 +87,18 @@ Item {
     return translation !== "" ? translation : romanization
   }
 
+  // The reading of each part of a line, to set above its characters, when the
+  // setting wants a romanization and the backend could pair it with the words.
+  function rubyFor(line) {
+    if (!line || (secondaryMode !== "auto" && secondaryMode !== "romanization")) return []
+    return Array.isArray(line.ruby) ? line.ruby : []
+  }
+
+  // What still goes under a line whose romanization already sits above it.
+  function secondaryBesideRuby(line) {
+    return line && secondaryMode === "auto" ? String(line.translation || "") : ""
+  }
+
   onLyricsSourceChanged: requestLyrics(false)
 
   function playerKey(player) {
@@ -209,6 +221,18 @@ Item {
     fetchProcess.running = true
   }
 
+  // [text, reading] pairs from the backend, checked like everything else it sends.
+  function safeRuby(value) {
+    if (!Array.isArray(value)) return []
+    var result = []
+    for (var i = 0; i < value.length && i < 200; i++) {
+      var pair = value[i]
+      if (!Array.isArray(pair) || pair.length < 2) return []
+      result.push([String(pair[0] || "").slice(0, 64), String(pair[1] || "").slice(0, 64)])
+    }
+    return result
+  }
+
   function applyResponse(raw, exitCode) {
     if (fetchProcess.serial !== requestSerial || fetchProcess.trackKey !== trackKey) return
     try {
@@ -228,7 +252,8 @@ Item {
           atMs: Math.max(0, Math.round(Number(line.atMs))),
           text: String(line.text || "").slice(0, 4096),
           translation: String(line.translation || "").slice(0, 4096),
-          romanization: String(line.romanization || "").slice(0, 4096)
+          romanization: String(line.romanization || "").slice(0, 4096),
+          ruby: safeRuby(line.ruby)
         })
       }
       lines = safeLines

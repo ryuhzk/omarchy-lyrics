@@ -289,6 +289,23 @@ class JellyfinTests(unittest.TestCase):
         self.assertEqual(lyrics.align_by_text(lines, other), 2)
         self.assertEqual([line["romanization"] for line in lines], ["one two", "three"])
 
+    def test_chinese_readings_pair_one_syllable_per_character(self):
+        segments = lyrics.ruby_segments("\u6211\u6068 \u6211 Wo...", "o han o WOO")
+        self.assertEqual(segments, [["\u6211", "o"], ["\u6068", "han"], [" ", ""], ["\u6211", "o"],
+                                    [" ", ""], ["Wo", "woo"], ["...", ""]])
+
+    def test_japanese_kanji_take_the_syllables_between_kana(self):
+        # 夢ならば / 以上傷つく: kanji runs take whatever the kana leave them.
+        self.assertEqual(lyrics.ruby_segments("\u5922\u306a\u3089\u3070", "yu me na ra ba"),
+                         [["\u5922", "yume"], ["\u306a", "na"], ["\u3089", "ra"], ["\u3070", "ba"]])
+        segments = lyrics.ruby_segments("\u304d\u3063\u3068\u4ee5\u4e0a\u50b7\u3064\u304f",
+                                        "ki tto i jyo u ki zu tsu ku")
+        self.assertEqual(segments[2], ["\u4ee5\u4e0a\u50b7", "ijyoukizu"])
+
+    def test_readings_that_do_not_fit_the_line_are_left_out(self):
+        self.assertIsNone(lyrics.ruby_segments("\u6211\u6068", "o han o gong"))
+        self.assertIsNone(lyrics.ruby_segments("\u306a\u3089", "ka ki"))
+
     def test_the_playing_item_is_found_through_sessions(self):
         def opener(request, timeout):
             if "/Sessions" in request.full_url:
