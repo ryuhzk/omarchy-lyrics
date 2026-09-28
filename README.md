@@ -8,12 +8,18 @@ can sing along to songs in languages you are still learning.
 
 - The current and next line over the desktop while a track is playing. The
   lines are click-through and fade away when playback stops.
-- A second line under the one being sung: the translation, or the romanization
-  (Japanese romaji, Cantonese jyutping) when there is no translation.
+- The romanization (Japanese romaji, Cantonese jyutping) set over the
+  characters it spells, one syllable per character in Chinese and a whole
+  reading per kanji in Japanese, with the translation on a line underneath.
+  Lines whose romanization cannot be paired with the words show it underneath
+  instead.
 - A full lyrics panel from the bar, with the current line highlighted and
   followed as the song plays.
 - Lyrics from NetEase Cloud Music by default, with LRCLIB as the fallback.
   Timed lyrics always win over plain ones.
+- Lyrics that come without a translation or romanization get them from
+  NetEase, found by their words, so a track tagged with an English title still
+  gets them.
 - Optional Jellyfin support: the lyrics stored with your library are used
   first, and NetEase only adds the translation or romanization, matched on the
   words so that a different recording of the same song still lines up.
