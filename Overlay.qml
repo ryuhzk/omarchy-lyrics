@@ -145,7 +145,13 @@ PanelWindow {
     Column {
       id: lineColumn
       width: parent.width
-      spacing: Math.round(root.fontSize * 0.35)
+      spacing: Math.round(root.fontSize * 0.3)
+
+      // No outline: a hard black edge reads as a sticker on a light wallpaper
+      // and clogs the thin strokes of Han characters. Each line instead casts
+      // a faint one-pixel lift in the theme's background colour, which is
+      // invisible where the wallpaper already contrasts and just enough where
+      // it does not.
 
       Text {
         width: parent.width
@@ -158,38 +164,40 @@ PanelWindow {
         Behavior on color { ColorAnimation { duration: 160 } }
         font.family: Style.font.family
         font.pixelSize: root.fontSize
-        font.bold: true
+        font.weight: Font.DemiBold
+        style: Text.Raised
+        styleColor: Qt.alpha(Color.background, 0.5)
+        font.letterSpacing: root.fontSize * 0.04
         wrapMode: Text.WordWrap
-        // Drawn over whatever the wallpaper happens to be, so it carries its
-        // own contrast rather than trusting the background to be dark.
-        style: Text.Outline
-        styleColor: Qt.rgba(0, 0, 0, 0.75)
       }
 
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownSecondary
-        color: Color.foreground
+        color: Qt.alpha(Color.accent, 0.8)
         font.family: Style.font.family
-        font.pixelSize: Math.round(root.fontSize * 0.62)
+        font.pixelSize: Math.round(root.fontSize * 0.55)
+        style: Text.Raised
+        styleColor: Qt.alpha(Color.background, 0.5)
+        font.letterSpacing: root.fontSize * 0.02
         wrapMode: Text.WordWrap
         visible: text !== ""
-        style: Text.Outline
-        styleColor: Qt.rgba(0, 0, 0, 0.7)
       }
 
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownNext
-        color: Qt.darker(Color.foreground, 1.7)
+        topPadding: Math.round(root.fontSize * 0.15)
+        color: Qt.alpha(Color.foreground, 0.55)
         font.family: Style.font.family
-        font.pixelSize: Math.round(root.fontSize * 0.72)
+        font.pixelSize: Math.round(root.fontSize * 0.68)
+        style: Text.Raised
+        styleColor: Qt.alpha(Color.background, 0.5)
+        font.letterSpacing: root.fontSize * 0.02
         wrapMode: Text.WordWrap
         visible: text !== ""
-        style: Text.Outline
-        styleColor: Qt.rgba(0, 0, 0, 0.6)
       }
     }
   }
