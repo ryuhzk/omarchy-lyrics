@@ -35,7 +35,7 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
@@ -521,12 +521,24 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
         nearby = range(position, min(len(other), position + 12))
         for candidate in [*nearby, *(index for index in range(len(other)) if index not in nearby)]:
             if same_words(key, keys[candidate]):
+                # A line the other source splits in two: take the lines that
+                # follow for as long as they continue it, so the extras cover
+                # the whole line rather than its first half.
+                span = [candidate]
+                rest = key[len(keys[candidate]):] if same_form(keys[candidate], key[:len(keys[candidate])]) else ""
+                while rest and span[-1] + 1 < len(other):
+                    following = keys[span[-1] + 1]
+                    size = min(len(rest), len(following))
+                    if size < 2 or not same_form(rest[:size], following[:size]):
+                        break
+                    span.append(span[-1] + 1)
+                    rest = rest[len(following):]
                 for field in ("translation", "romanization"):
-                    value = other[candidate].get(field)
-                    if value:
-                        line[field] = value
+                    parts = [str(other[index].get(field) or "") for index in span]
+                    if any(parts):
+                        line[field] = " ".join(part for part in parts if part)
                 matched += 1
-                position = candidate + 1
+                position = span[-1] + 1
                 break
     return matched
 

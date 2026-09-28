@@ -282,6 +282,13 @@ class JellyfinTests(unittest.TestCase):
         self.assertFalse(lyrics.same_words("abcdefghij", "abc"))
         self.assertFalse(lyrics.same_words("abcdefghij", "zyxwvu"))
 
+    def test_a_line_split_in_two_elsewhere_gets_both_halves(self):
+        lines = [{"text": "abcdef ghijkl"}, {"text": "mnopqr"}]
+        other = [{"text": "abcdef", "romanization": "one"}, {"text": "ghijkl", "romanization": "two"},
+                 {"text": "mnopqr", "romanization": "three"}]
+        self.assertEqual(lyrics.align_by_text(lines, other), 2)
+        self.assertEqual([line["romanization"] for line in lines], ["one two", "three"])
+
     def test_the_playing_item_is_found_through_sessions(self):
         def opener(request, timeout):
             if "/Sessions" in request.full_url:
