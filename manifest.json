@@ -115,5 +115,7 @@
         "description": "Shown under each lyric. Auto shows the translation, or the romanization when there is none."
       }
     ]
-  }
+  },
+  "repository": "https://github.com/ryuhzk/omarchy-lyrics",
+  "homepage": "https://github.com/ryuhzk/omarchy-lyrics"
 }

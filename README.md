@@ -1,89 +1,149 @@
 # Omarchy Lyrics
 
-Synchronized lyrics for the current MPRIS track, directly in the Omarchy bar.
-
-The plugin selects the active media player, looks up lyrics from LRCLIB when the
-track changes, and follows timed LRC lines as playback advances. Click the bar
-widget to open the complete lyrics panel.
+Synchronized lyrics for whatever is playing, over the desktop and in a panel
+from the Omarchy bar, with a translation or romanization under each line so you
+can sing along to songs in languages you are still learning.
 
 ## Features
 
-- Current synchronized lyric line in the bar
-- Full lyrics panel with active-line highlighting and automatic scrolling
-- MPRIS playback controls: middle-click toggles playback; the wheel changes tracks
-- Exact LRCLIB lookup with ranked search fallback
-- Plain-lyrics and instrumental fallbacks
-- Local result cache with shorter negative-result expiry
-- Estimated playback clock when a player does not expose a working position
+- The current and next line over the desktop while a track is playing. The
+  lines are click-through and fade away when playback stops.
+- A second line under the one being sung: the translation, or the romanization
+  (Japanese romaji, Cantonese jyutping) when there is no translation.
+- A full lyrics panel from the bar, with the current line highlighted and
+  followed as the song plays.
+- Lyrics from NetEase Cloud Music by default, with LRCLIB as the fallback.
+  Timed lyrics always win over plain ones.
+- Optional Jellyfin support: the lyrics stored with your library are used
+  first, and NetEase only adds the translation or romanization, matched on the
+  words so that a different recording of the same song still lines up.
+- Colours follow the Omarchy theme.
+- Playback controls on the bar icon.
 
 ## Requirements
 
 - Omarchy 4.0 or newer
-- Python 3
-- An MPRIS-compatible media player
-- Network access to `https://lrclib.net` for uncached tracks
+- Python 3 (standard library only)
+- An MPRIS media player
+- Network access to `music.163.com` and `lrclib.net` for tracks that are not
+  cached yet
 
-No Python packages, API keys, `playerctl`, or background containers are required.
-
-## Local installation
-
-For development, link the checkout into the user plugin directory:
+## Install
 
 ```bash
-ln -s "$PWD" ~/.config/omarchy/plugins/io.github.ryuhzk.lyrics
-omarchy-shell shell rescanPlugins
-omarchy plugin enable io.github.ryuhzk.lyrics --after omarchy.clock
+omarchy plugin add https://github.com/ryuhzk/omarchy-lyrics --enable
 ```
 
-The plugin source and `shell.json` both hot-reload. Remove the link and disable
-the plugin when it is no longer wanted.
+`omarchy plugin add` shows what it is about to clone and asks before doing it.
+`--enable` puts the icon in the middle of the bar. To move it:
+
+```bash
+omarchy bar move io.github.ryuhzk.lyrics --section right --index 0
+```
+
+or use **Setup → Plugins → Lyrics**.
+
+The plugin keeps running when its panel is closed, so the desktop lyrics can
+follow the music. Restart the shell once after installing:
+
+```bash
+omarchy restart shell
+```
+
+## Jellyfin (optional)
+
+If you play music from a Jellyfin server, for example through Feishin, the
+plugin can read the lyrics stored in your library. Create an API key in the
+Jellyfin dashboard (**Dashboard → API Keys**), then:
+
+```bash
+mkdir -p ~/.config/omarchy-lyrics
+cat > ~/.config/omarchy-lyrics/jellyfin.env <<'EOF'
+JELLYFIN_URL=https://jellyfin.example.com
+JELLYFIN_API_KEY=your-api-key
+EOF
+chmod 600 ~/.config/omarchy-lyrics/jellyfin.env
+```
+
+The plugin finds the playing track through the server's active sessions, or by
+searching the library for its title, artist and length. Without this file,
+Jellyfin is skipped.
 
 ## Usage
 
-- Left-click: open or close the full lyrics panel
-- Right-click: bypass the cache and fetch the current lyrics again
+- Left-click the icon: open or close the lyrics panel
+- Right-click: skip the cache and fetch the lyrics again
 - Middle-click: play or pause
-- Scroll up/down: previous or next track
+- Scroll up or down: previous or next track
 - Escape: close the panel
-- Tab / Shift+Tab: switch between neighboring bar panels
 
 ## Settings
 
-| Setting                | Default | Meaning                                              |
-| ---------------------- | ------: | ---------------------------------------------------- |
-| `maxWidth`             |   `360` | Maximum Bar lyric width                              |
-| `panelWidth`           |   `520` | Full lyrics panel width                              |
-| `offsetMs`             |     `0` | Positive advances lyrics; negative delays them       |
-| `showTrackWhenMissing` |  `true` | Show title and artist before or without a lyric line |
-
-For example:
+Change them in **Setup → Plugins → Lyrics**, or from the command line:
 
 ```bash
 omarchy bar set io.github.ryuhzk.lyrics offsetMs 500
 ```
 
-## Synchronization behavior
+| Setting               | Default        | Meaning                                                    |
+| --------------------- | -------------- | ---------------------------------------------------------- |
+| `lyricsSource`        | `NetEase`      | Source asked first: `NetEase` or `LRCLIB`                  |
+| `secondaryLyrics`     | `Auto`         | `Auto`, `Translation`, `Romanization` or `Off`             |
+| `overlayEnabled`      | `true`         | Show the lyrics over the desktop                           |
+| `overlayPosition`     | `Bottom right` | `Bottom right` or `Bottom center`                          |
+| `overlayFontSize`     | `30`           | Size of the current line; the others are drawn smaller     |
+| `overlayBottomMargin` | `180`          | Distance of the lines from the bottom of the screen        |
+| `panelWidth`          | `520`          | Width of the lyrics panel                                  |
+| `offsetMs`            | `0`            | Positive values advance the lyrics, negative values delay  |
 
-Players with a working MPRIS position provide exact seeking and startup sync.
-Some browser integrations advertise position support but always return zero.
-For those players, the plugin estimates time from track changes and pause/resume
-state. That estimate is accurate after the next track begins, but cannot recover
-the initial offset when the plugin starts halfway through a song or after a seek.
+## Update
 
-## Privacy and caching
+```bash
+omarchy plugin update io.github.ryuhzk.lyrics
+```
 
-Track title, artist, album, and duration are sent to LRCLIB for lookup. Lyrics
-responses are cached under `${XDG_CACHE_HOME:-~/.cache}/omarchy-lyrics` for up
-to 30 days; misses expire after six hours. The plugin does not use credentials
-or transmit local file paths.
+The update shows the diff before it applies anything.
+
+## Remove
+
+```bash
+omarchy plugin remove io.github.ryuhzk.lyrics
+```
+
+It asks first, then takes the icon off the bar, removes its entry from
+`~/.config/omarchy/shell.json` and deletes the plugin's folder.
+
+The plugin also keeps a lyrics cache and, if you set it up, the Jellyfin file.
+Remove them too if you want nothing left behind:
+
+```bash
+rm -rf ~/.cache/omarchy-lyrics ~/.config/omarchy-lyrics
+```
+
+## Privacy
+
+To find lyrics, the track's title, artist, album and length are sent to NetEase
+Cloud Music and LRCLIB. A line or two of the lyrics may also be sent to NetEase
+to find the matching translation. With Jellyfin set up, the same details go to
+your own server, together with your API key. Nothing else leaves the machine,
+and no file paths are sent.
+
+Results are cached under `${XDG_CACHE_HOME:-~/.cache}/omarchy-lyrics` for 30
+days. A track with no lyrics is looked up again after six hours.
+
+## Synchronization
+
+Players that report a working MPRIS position stay exactly in sync, seeking
+included. Some browser players claim to report their position but always report
+zero. For those, the plugin estimates the time from track changes and
+pause/resume. The estimate is right from the next track on, but it cannot know
+where you were when the plugin started halfway through a song or after a seek.
 
 ## Development
-
-Run the complete local check:
 
 ```bash
 ./check
 ```
 
-It compiles and tests the Python backend, validates the plugin manifest, checks
-the stable metadata contract, and runs `qmllint` when available.
+It compiles and tests the Python backend, validates the manifest and runs
+`qmllint` when it is available.
