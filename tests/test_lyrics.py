@@ -303,6 +303,19 @@ class JellyfinTests(unittest.TestCase):
         self.assertEqual(lyrics.align_by_text(lines, other), 2)
         self.assertNotIn("romanization", lines[1])
 
+    def test_a_translation_stamped_with_its_original_is_folded_into_it(self):
+        lines = [{"atMs": 0, "text": "\u7a93\u306b\u897f\u967d"}, {"atMs": 0, "text": "\u5915\u9633"},
+                 {"atMs": 5, "text": "Hello"}, {"atMs": 5, "text": "World"}]
+        folded = lyrics.fold_same_time(lines)
+        self.assertEqual([line["text"] for line in folded], ["\u7a93\u306b\u897f\u967d", "Hello", "World"])
+        self.assertEqual(folded[0]["translation"], "\u5915\u9633")
+
+    def test_credits_after_a_title_line_are_dropped(self):
+        lines = [{"atMs": 0, "text": "Title - Artist"}, {"atMs": 1, "text": "\u8a5e\uff1aA"},
+                 {"atMs": 2, "text": "\u66f2\uff1aB"}, {"atMs": 3, "text": "words"}]
+        self.assertEqual([line["text"] for line in lyrics.strip_leading_credits(lines)],
+                         ["Title - Artist", "words"])
+
     def test_chinese_readings_pair_one_syllable_per_character(self):
         segments = lyrics.ruby_segments("\u6211\u6068 \u6211 Wo...", "o han o WOO")
         self.assertEqual(segments, [["\u6211", "o"], ["\u6068", "han"], [" ", ""], ["\u6211", "o"],

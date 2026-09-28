@@ -29,6 +29,7 @@ Panel {
   }
 
   function open() {
+    resetSearchText()
     controller.show()
     Qt.callLater(scrollToCurrentLine)
   }
@@ -55,6 +56,20 @@ Panel {
   onActiveLineIndexChanged: Qt.callLater(scrollToCurrentLine)
 
   readonly property bool searching: lyricsService !== null && lyricsService.searchStatus !== "idle"
+
+  // The search starts from what the player says is playing, so a wrong match
+  // usually needs only a tweak (the Chinese title for a romanized one) rather
+  // than typing it all out. Left alone while the box is being edited.
+  readonly property string defaultSearch: lyricsService
+    ? [lyricsService.title, lyricsService.artist].filter(function(value) {
+        return String(value || "").trim() !== ""
+      }).join(" ") : ""
+
+  function resetSearchText() {
+    if (!searchField.activeFocus) searchField.text = defaultSearch
+  }
+
+  onDefaultSearchChanged: resetSearchText()
 
   function runSearch() {
     if (lyricsService) lyricsService.searchSongs(searchField.text)
@@ -224,6 +239,9 @@ Panel {
             width: parent.width - searchButton.width - parent.spacing
             anchors.verticalCenter: parent.verticalCenter
             placeholderText: "Wrong lyrics? Search NetEase by song or a line"
+            Component.onCompleted: text = root.defaultSearch
+            // Everything selected on focus, so typing replaces the suggestion.
+            onActiveFocusChanged: if (activeFocus) selectAll()
             foreground: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall

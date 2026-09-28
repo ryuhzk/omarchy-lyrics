@@ -35,7 +35,7 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 9
+CACHE_VERSION = 10
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
@@ -77,6 +77,7 @@ DECORATION_RE = re.compile(
 CREDIT_RE = re.compile(
     r"^\s*(\u4f5c\u8bcd|\u4f5c\u66f2|\u7f16\u66f2|\u5236\u4f5c\u4eba|\u51fa\u54c1|\u53d1\u884c|"
     r"\u76d1\u5236|\u7edf\u7b79|\u4f01\u5212|\u5f55\u97f3|\u6df7\u97f3|\u6bcd\u5e26|\u548c\u58f0|"
+    r"\u4f5c\u8a5e|\u7de8\u66f2|\u88fd\u4f5c|\u8a5e|"
     r"\u8bcd|\u66f2|OP|SP|Lyricist|Lyrics|Composer|Arranger|Producer|Produced|Publisher)\s*[:\uff1a]",
     re.IGNORECASE,
 )
@@ -246,7 +247,7 @@ def payload_from_track(track: dict[str, object] | None) -> dict[str, object]:
     synced = bounded_remote_text(track.get("syncedLyrics"), MAX_LYRICS_CHARS)
     plain = bounded_remote_text(track.get("plainLyrics"), MAX_LYRICS_CHARS)
     instrumental = track.get("instrumental") is True
-    lines = parse_lrc(synced)
+    lines = fold_same_time(parse_lrc(synced))
     if instrumental:
         status = "instrumental"
     elif lines or plain:
@@ -414,11 +415,46 @@ def netease_score(song: dict[str, object], metadata: dict[str, object]) -> int |
     return points
 
 
+# Credits sit in the first few lines, sometimes after a title line.
+CREDIT_WINDOW = 6
+
+
 def strip_leading_credits(lines: list[dict[str, object]]) -> list[dict[str, object]]:
-    start = 0
-    while start < len(lines) and CREDIT_RE.match(str(lines[start].get("text", ""))):
-        start += 1
-    return lines[start:]
+    return [line for number, line in enumerate(lines)
+            if number >= CREDIT_WINDOW or not CREDIT_RE.match(str(line.get("text", "")))]
+
+
+KANA_TEXT_RE = re.compile(r"[\u3040-\u30ff']")
+HANGUL_TEXT_RE = re.compile(r"[\uac00-\ud7af']")
+
+
+def script_of(text: str) -> str:
+    if KANA_TEXT_RE.search(text):
+        return "kana"
+    if HANGUL_TEXT_RE.search(text):
+        return "hangul"
+    letters = sum(1 for character in text if character.isascii() and character.isalpha())
+    han = sum(1 for character in text if HAN_RE.match(character))
+    return "latin" if letters > han else "han"
+
+
+def fold_same_time(lines: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Bilingual LRC stamps each translation with its original's time, right
+    after it. As a line of its own the translation would replace the original
+    the moment it starts; folded in, it becomes the original's translation,
+    shown under it. Only a line in another script is folded, so a duet's two
+    voices sharing a moment stay two lines."""
+    result: list[dict[str, object]] = []
+    for line in lines:
+        previous = result[-1] if result else None
+        text = str(line.get("text", ""))
+        if (previous is not None and int(previous["atMs"]) == int(line["atMs"])
+                and script_of(text) != script_of(str(previous.get("text", "")))):
+            if not previous.get("translation"):
+                previous["translation"] = text
+            continue
+        result.append(line)
+    return result
 
 
 def attach_secondary(
@@ -540,9 +576,10 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
                         break
                     span.append(span[-1] + 1)
                     rest = rest[len(following):]
+                # The lyrics' own translation, from a bilingual file, wins.
                 for field in ("translation", "romanization"):
                     parts = [str(other[index].get(field) or "") for index in span]
-                    if any(parts):
+                    if any(parts) and not line.get(field):
                         line[field] = " ".join(part for part in parts if part)
                 matched += 1
                 placed[number] = (span[0], span[-1])
@@ -569,7 +606,7 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
             continue
         for field in ("translation", "romanization"):
             value = other[candidate].get(field)
-            if value:
+            if value and not line.get(field):
                 line[field] = value
         placed[number] = (candidate, candidate)
         matched += 1
@@ -740,6 +777,7 @@ def fetch_jellyfin(
     if not plain:
         return None
     lines.sort(key=lambda line: int(line["atMs"]))
+    lines = fold_same_time(strip_leading_credits(lines))
     return {
         "schemaVersion": SCHEMA_VERSION,
         "ok": True,
@@ -845,6 +883,20 @@ def search_results(keyword: str, opener: Callable[..., Any] = urllib.request.url
     return results
 
 
+def without_title_line(payload: dict[str, object] | None, metadata: dict[str, object]) -> dict[str, object] | None:
+    """Drop the "Title - Artist" line some lyrics files open with: it is not
+    sung, and it would borrow a stranger's romanization from its neighbour."""
+    lines = payload.get("lines") if payload else None
+    title = canonical(metadata.get("title"))
+    if not isinstance(lines, list) or not lines or not title:
+        return payload
+    first = str(lines[0].get("text", ""))
+    if " - " in first and title in canonical(first):
+        payload = dict(payload)
+        payload["lines"] = lines[1:]
+    return payload
+
+
 def fetch_chosen(
     metadata: dict[str, object],
     song_id: int,
@@ -887,7 +939,7 @@ def fetch_remote(
     """
     live = fetchers is None
     if live:
-        library = fetch_jellyfin(jellyfin_item_for(metadata))
+        library = without_title_line(fetch_jellyfin(jellyfin_item_for(metadata)), metadata)
         chosen_id = int(metadata.get("choice") or 0)
         if chosen_id > 0:
             chosen = fetch_chosen(metadata, chosen_id, library)
