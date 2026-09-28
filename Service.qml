@@ -53,6 +53,14 @@ Item {
   readonly property string artist: activePlayer ? String(activePlayer.trackArtist || "") : ""
   readonly property string album: activePlayer ? String(activePlayer.trackAlbum || "") : ""
   readonly property string artUrl: activePlayer ? String(activePlayer.trackArtUrl || "") : ""
+  // A Jellyfin client (Feishin) ends its MPRIS track id with the item id, which
+  // lets the helper ask the server for the library's own lyrics.
+  readonly property string itemId: {
+    var metadata = activePlayer ? activePlayer.metadata : null
+    var trackId = metadata ? String(metadata["mpris:trackid"] || "") : ""
+    var match = /\/([0-9a-f]{32})$/.exec(trackId)
+    return match ? match[1] : ""
+  }
   readonly property string playerIdentity: activePlayer
     ? String(activePlayer.identity || activePlayer.desktopEntry || "") : ""
   readonly property bool isPlaying: activePlayer ? activePlayer.isPlaying === true : false
@@ -171,6 +179,7 @@ Item {
       artist: boundedMetadata(artist),
       album: boundedMetadata(album),
       duration: activePlayer && activePlayer.lengthSupported ? Number(activePlayer.length) : 0,
+      itemId: itemId,
       refresh: refresh === true
     }
     lyricsStatus = "loading"
@@ -192,7 +201,8 @@ Item {
       "--artist", request.artist,
       "--album", request.album,
       "--duration", String(Math.max(0, Number(request.duration) || 0)),
-      "--source", lyricsSource === "lrclib" ? "lrclib" : "netease"
+      "--source", lyricsSource === "lrclib" ? "lrclib" : "netease",
+      "--item-id", request.itemId || ""
     ]
     if (request.refresh) command.push("--refresh")
     fetchProcess.command = command

@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Fetch, validate, parse, and cache synced lyrics for the Omarchy plugin.
 
-Two sources: NetEase Cloud Music, which also carries a translation and a
-romanization for many songs, and LRCLIB. The preferred one is asked first and
-the other only when it has nothing.
+Sources, in order:
+
+1. The user's own Jellyfin server, when the player names a Jellyfin item and
+   ~/.config/omarchy-lyrics/jellyfin.env holds the server's URL and an API key:
+   the library's own lyrics, the same ones Feishin shows, with no guessing.
+   NetEase is then asked only for the translation and romanization of the same
+   words, matched line by line on the text.
+2. NetEase Cloud Music, which also carries a translation and a romanization
+   for many songs, and LRCLIB. The preferred one is asked first and the other
+   only when it has nothing.
 """
 
 from __future__ import annotations
@@ -28,11 +35,20 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 3
+CACHE_VERSION = 6
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
 NETEASE_SEARCH_LIMIT = 10
+NETEASE_SEARCH_SONGS = 1
+NETEASE_SEARCH_LYRICS = 1006
+JELLYFIN_ENV = "omarchy-lyrics/jellyfin.env"
+ITEM_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# Jellyfin times lyric lines in ticks of 100 ns.
+TICKS_PER_MS = 10_000
+# A NetEase version counts as the same words when this share of the library's
+# lines find their counterpart in it.
+MIN_ALIGNED_SHARE = 0.5
 SOURCES = ("netease", "lrclib")
 # How far apart a translated line and its original may be stamped and still be
 # the same line; NetEase's translations are usually stamped identically.
@@ -299,12 +315,18 @@ def netease_headers() -> dict[str, str]:
     return {"Accept": "application/json", "Referer": "https://music.163.com", "User-Agent": CLIENT_HEADER}
 
 
-def netease_search(metadata: dict[str, object], opener: Callable[..., Any]) -> list[dict[str, object]]:
-    title = clean_metadata(metadata.get("title"))
-    artist = clean_metadata(metadata.get("artist"))
-    keyword = f"{title} {artist}".strip()
+def netease_search(
+    metadata: dict[str, object],
+    opener: Callable[..., Any],
+    keyword: str = "",
+    kind: int = NETEASE_SEARCH_SONGS,
+) -> list[dict[str, object]]:
+    if not keyword:
+        title = clean_metadata(metadata.get("title"))
+        artist = clean_metadata(metadata.get("artist"))
+        keyword = f"{title} {artist}".strip()
     body = urllib.parse.urlencode(
-        {"s": keyword, "type": 1, "offset": 0, "limit": NETEASE_SEARCH_LIMIT}
+        {"s": keyword[:MAX_METADATA_CHARS], "type": kind, "offset": 0, "limit": NETEASE_SEARCH_LIMIT}
     ).encode("utf-8")
     request = urllib.request.Request(
         NETEASE_SEARCH_URL,
@@ -455,6 +477,237 @@ def netease_payload(song: dict[str, object], data: object) -> dict[str, object] 
     }
 
 
+def netease_lyric_data(song_id: int, opener: Callable[..., Any]) -> object | None:
+    query = urllib.parse.urlencode({"id": song_id, "lv": -1, "kv": -1, "tv": -1, "rv": -1})
+    request = urllib.request.Request(f"{NETEASE_LYRIC_URL}?{query}", headers=netease_headers())
+    return read_json(request, opener)
+
+
+def line_key(text: object) -> str:
+    return canonical(text)
+
+
+def same_form(left: str, right: str) -> bool:
+    """Equal-length text that differs at most in traditional and simplified
+    forms of the same characters (a third or more of them identical)."""
+    if len(left) != len(right) or len(left) < 2:
+        return False
+    shared = sum(1 for a, b in zip(left, right) if a == b)
+    return shared * 3 >= len(left)
+
+
+def same_words(left: str, right: str) -> bool:
+    """Whether two lyric lines say the same thing, allowing traditional and
+    simplified forms, and a line one source splits where the other does not
+    (the shorter is then the start or the end of the longer)."""
+    if not left or not right:
+        return False
+    if left == right or same_form(left, right):
+        return True
+    short, long = sorted((left, right), key=len)
+    return len(short) >= 4 and (same_form(short, long[:len(short)]) or same_form(short, long[-len(short):]))
+
+
+def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]) -> int:
+    """Copy translation and romanization from `other` onto the lines that say
+    the same words, walking both in order. Returns how many lines matched."""
+    matched = 0
+    position = 0
+    keys = [line_key(entry.get("text")) for entry in other]
+    for line in lines:
+        key = line_key(line.get("text"))
+        # Near the last match first; then anywhere, since a chorus the other
+        # source repeats in a different order still carries the same extras.
+        nearby = range(position, min(len(other), position + 12))
+        for candidate in [*nearby, *(index for index in range(len(other)) if index not in nearby)]:
+            if same_words(key, keys[candidate]):
+                for field in ("translation", "romanization"):
+                    value = other[candidate].get(field)
+                    if value:
+                        line[field] = value
+                matched += 1
+                position = candidate + 1
+                break
+    return matched
+
+
+def enrich_from_netease(
+    payload: dict[str, object],
+    metadata: dict[str, object],
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> dict[str, object]:
+    """Add NetEase's translation or romanization to lyrics that came from
+    elsewhere, matched on the words rather than the times: the library's
+    recording and NetEase's may be different versions of the same song."""
+    lines = payload.get("lines")
+    if not isinstance(lines, list) or len(lines) < 4:
+        return payload
+    artist = clean_metadata(metadata.get("artist"))
+    sample = max((str(line.get("text", "")) for line in lines[:12]), key=len)
+    # By name first (works when the tags are Han), then by a line of the words
+    # (works when they are romanized, "Xi Yang Zhi Ge"), with and without the
+    # artist. Each search is cheap; the lyrics of each candidate are not, so
+    # only the first few distinct songs are opened.
+    searches = [
+        (f"{clean_metadata(metadata.get('title'))} {artist}".strip(), NETEASE_SEARCH_SONGS),
+        (sample, NETEASE_SEARCH_LYRICS),
+        (f"{sample} {artist}".strip(), NETEASE_SEARCH_LYRICS),
+    ]
+    best: tuple[int, list[dict[str, object]]] | None = None
+    seen: set[int] = set()
+    try:
+        for keyword, kind in searches:
+            for song in netease_search(metadata, opener, keyword=keyword, kind=kind)[:4]:
+                song_id = song.get("id")
+                if not isinstance(song_id, int) or song_id in seen or len(seen) >= 8:
+                    continue
+                seen.add(song_id)
+                other = netease_payload(song, netease_lyric_data(song_id, opener))
+                if other is None:
+                    continue
+                if not any(line.get("translation") or line.get("romanization") for line in other["lines"]):
+                    continue
+                trial = [dict(line) for line in lines]
+                matched = align_by_text(trial, other["lines"])
+                if best is None or matched > best[0]:
+                    best = (matched, trial)
+            if best is not None and best[0] >= len(lines) * 0.9:
+                break
+    except LyricsError:
+        pass
+    if best is None or best[0] < len(lines) * MIN_ALIGNED_SHARE:
+        return payload
+    result = dict(payload)
+    result["lines"] = best[1]
+    result["secondarySource"] = "netease"
+    return result
+
+
+def jellyfin_settings(config_home: str = "") -> tuple[str, str]:
+    base = Path(config_home or os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    values: dict[str, str] = {}
+    try:
+        for raw in (base / JELLYFIN_ENV).read_text(encoding="utf-8").splitlines()[:50]:
+            key, _, value = raw.strip().partition("=")
+            values[key] = value.strip().strip("\"'")
+    except (OSError, UnicodeDecodeError):
+        return "", ""
+    url = values.get("JELLYFIN_URL", "").rstrip("/")
+    if not re.fullmatch(r"https?://[A-Za-z0-9.:_-]+(/[A-Za-z0-9._~/-]*)?", url):
+        return "", ""
+    return url, values.get("JELLYFIN_API_KEY", "")
+
+
+def jellyfin_json(path: str, opener: Callable[..., Any], config_home: str = "") -> object | None:
+    url, key = jellyfin_settings(config_home)
+    if not url or not key:
+        return None
+    request = urllib.request.Request(
+        f"{url}{path}",
+        headers={"Accept": "application/json", "Authorization": f'MediaBrowser Token="{key}"'},
+    )
+    try:
+        return read_json(request, opener)
+    except LyricsError:
+        return None
+
+
+def is_this_item(item: object, metadata: dict[str, object]) -> bool:
+    if not isinstance(item, dict) or not ITEM_ID_RE.fullmatch(str(item.get("Id") or "")):
+        return False
+    if canonical(item.get("Name")) != canonical(metadata.get("title")):
+        return False
+    artist = canonical(metadata.get("artist"))
+    artists = item.get("Artists") if isinstance(item.get("Artists"), list) else []
+    if artist and artists and not any(canonical(name) and (canonical(name) in artist or artist in canonical(name))
+                                      for name in artists):
+        return False
+    duration = finite_float(metadata.get("duration"))
+    ticks = item.get("RunTimeTicks")
+    if duration > 0 and isinstance(ticks, int) and ticks > 0 and abs(ticks / 1e7 - duration) > 3:
+        return False
+    return True
+
+
+def jellyfin_item_for(
+    metadata: dict[str, object],
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    config_home: str = "",
+) -> str:
+    """The Jellyfin item being played: the one the player named, else what a
+    Jellyfin client is playing now, else the library's own track by that name."""
+    given = str(metadata.get("itemId") or "")
+    if ITEM_ID_RE.fullmatch(given):
+        return given
+    title = clean_metadata(metadata.get("title"))
+    if not title:
+        return ""
+    sessions = jellyfin_json("/Sessions?activeWithinSeconds=600", opener, config_home)
+    for session in sessions[:50] if isinstance(sessions, list) else []:
+        item = session.get("NowPlayingItem") if isinstance(session, dict) else None
+        if is_this_item(item, metadata):
+            return str(item["Id"])
+    query = urllib.parse.urlencode({
+        "searchTerm": title[:200], "IncludeItemTypes": "Audio", "Recursive": "true", "Limit": 10,
+    })
+    found = jellyfin_json(f"/Items?{query}", opener, config_home)
+    items = found.get("Items") if isinstance(found, dict) else None
+    for item in items[:10] if isinstance(items, list) else []:
+        if is_this_item(item, metadata):
+            return str(item["Id"])
+    return ""
+
+
+def fetch_jellyfin(
+    item_id: str,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    config_home: str = "",
+) -> dict[str, object] | None:
+    """The library's own lyrics for a Jellyfin item, or None to fall through."""
+    if not ITEM_ID_RE.fullmatch(item_id or ""):
+        return None
+    url, key = jellyfin_settings(config_home)
+    if not url or not key:
+        return None
+    request = urllib.request.Request(
+        f"{url}/Audio/{item_id}/Lyrics",
+        headers={"Accept": "application/json", "Authorization": f'MediaBrowser Token="{key}"'},
+    )
+    try:
+        data = read_json(request, opener)
+    except LyricsError:
+        return None
+    entries = data.get("Lyrics") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return None
+    lines: list[dict[str, object]] = []
+    plain: list[str] = []
+    for entry in entries[:5000]:
+        if not isinstance(entry, dict):
+            continue
+        text = bounded_remote_text(entry.get("Text"), 4096).strip()
+        if not text:
+            continue
+        plain.append(text)
+        start = entry.get("Start")
+        if isinstance(start, int) and start >= 0:
+            lines.append({"atMs": start // TICKS_PER_MS, "text": text})
+    if not plain:
+        return None
+    lines.sort(key=lambda line: int(line["atMs"]))
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "ok": True,
+        "status": "ready",
+        "track": {"id": None, "title": "", "artist": "", "album": "", "duration": 0.0,
+                  "sourceUrl": ""},
+        "source": "jellyfin",
+        "instrumental": False,
+        "plainLyrics": "" if lines else "\n".join(plain),
+        "lines": lines,
+    }
+
+
 def fetch_netease(
     metadata: dict[str, object],
     opener: Callable[..., Any] = urllib.request.urlopen,
@@ -468,9 +721,7 @@ def fetch_netease(
             ranked.append((points, song))
     ranked.sort(key=lambda entry: entry[0], reverse=True)
     for _, song in ranked[:3]:
-        query = urllib.parse.urlencode({"id": song["id"], "lv": -1, "kv": -1, "tv": -1, "rv": -1})
-        request = urllib.request.Request(f"{NETEASE_LYRIC_URL}?{query}", headers=netease_headers())
-        payload = netease_payload(song, read_json(request, opener))
+        payload = netease_payload(song, netease_lyric_data(song["id"], opener))
         if payload is not None:
             return payload
     return payload_from_track(None)
@@ -488,6 +739,10 @@ def fetch_remote(
     on the desktop. A source that cannot be reached does not hide an answer the
     other one has.
     """
+    if fetchers is None:
+        library = fetch_jellyfin(jellyfin_item_for(metadata))
+        if library is not None and library.get("lines"):
+            return enrich_from_netease(library, metadata)
     fetchers = fetchers or {"netease": fetch_netease, "lrclib": fetch_lrclib}
     order = [source] + [name for name in SOURCES if name != source] if source in SOURCES else list(SOURCES)
     first_error: LyricsError | None = None
@@ -524,6 +779,7 @@ def cache_key(metadata: dict[str, object], source: str = "netease") -> str:
         {
             "version": CACHE_VERSION,
             "source": source,
+            "item": str(metadata.get("itemId") or ""),
             "title": clean_metadata(metadata.get("title")),
             "artist": clean_metadata(metadata.get("artist")),
             "album": clean_metadata(metadata.get("album")),
@@ -612,6 +868,8 @@ def parser() -> argparse.ArgumentParser:
     fetch.add_argument("--refresh", action="store_true")
     fetch.add_argument("--source", choices=SOURCES, default="netease",
                        help="Source asked first; the other is the fallback")
+    fetch.add_argument("--item-id", default="",
+                       help="Jellyfin item id from the player, for the library's own lyrics")
     return root
 
 
@@ -622,6 +880,7 @@ def main(arguments: list[str] | None = None) -> int:
         "artist": clean_metadata(options.artist),
         "album": clean_metadata(options.album),
         "duration": finite_float(options.duration),
+        "itemId": options.item_id.lower() if ITEM_ID_RE.fullmatch(options.item_id.lower()) else "",
     }
     try:
         result = fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh,

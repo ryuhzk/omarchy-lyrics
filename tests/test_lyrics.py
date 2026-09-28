@@ -250,5 +250,70 @@ class LrclibSearchTests(unittest.TestCase):
         self.assertNotEqual(lyrics.cache_key(metadata, "netease"), lyrics.cache_key(metadata, "lrclib"))
 
 
+class JellyfinTests(unittest.TestCase):
+    item = "0123456789abcdef0123456789abcdef"
+
+    def write_settings(self, directory):
+        folder = Path(directory) / "omarchy-lyrics"
+        folder.mkdir()
+        (folder / "jellyfin.env").write_text("JELLYFIN_URL=https://media.example\nJELLYFIN_API_KEY=secret\n")
+
+    def test_library_lyrics_convert_ticks_and_carry_the_key(self):
+        seen = []
+
+        def opener(request, timeout):
+            seen.append((request.full_url, request.headers.get("Authorization")))
+            return FakeResponse({"Lyrics": [{"Start": 159_900_000, "Text": "second"},
+                                             {"Start": 12_000_000, "Text": "first"},
+                                             {"Text": "  "}]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_settings(directory)
+            payload = lyrics.fetch_jellyfin(self.item, opener=opener, config_home=directory)
+        self.assertEqual(payload["source"], "jellyfin")
+        self.assertEqual([(line["atMs"], line["text"]) for line in payload["lines"]],
+                         [(1200, "first"), (15990, "second")])
+        self.assertEqual(seen[0][0], f"https://media.example/Audio/{self.item}/Lyrics")
+        self.assertEqual(seen[0][1], 'MediaBrowser Token="secret"')
+
+    def test_a_line_split_differently_still_aligns_on_its_start(self):
+        self.assertTrue(lyrics.same_words("abcdefghij", "abcdefgh"))
+        self.assertTrue(lyrics.same_words("abcdefghij", "defghij"))
+        self.assertFalse(lyrics.same_words("abcdefghij", "abc"))
+        self.assertFalse(lyrics.same_words("abcdefghij", "zyxwvu"))
+
+    def test_the_playing_item_is_found_through_sessions(self):
+        def opener(request, timeout):
+            if "/Sessions" in request.full_url:
+                return FakeResponse([{"NowPlayingItem": {"Id": self.item, "Name": "Song", "Artists": ["Artist"],
+                                                          "RunTimeTicks": 1_000_000_000}}])
+            return FakeResponse({"Items": []})
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_settings(directory)
+            metadata = {"title": "Song", "artist": "Artist", "duration": 100.5}
+            self.assertEqual(lyrics.jellyfin_item_for(metadata, opener, directory), self.item)
+            self.assertEqual(lyrics.jellyfin_item_for(dict(metadata, title="Other"), opener, directory), "")
+            self.assertEqual(lyrics.jellyfin_item_for(dict(metadata, duration=200), opener, directory), "")
+
+    def test_no_settings_or_no_item_falls_through(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertIsNone(lyrics.fetch_jellyfin(self.item, config_home=directory))
+            self.write_settings(directory)
+            self.assertIsNone(lyrics.fetch_jellyfin("../../etc", config_home=directory))
+
+    def test_text_alignment_tolerates_script_and_skips_strangers(self):
+        # One lyric line in simplified (library) and traditional (NetEase) forms.
+        library = [{"atMs": 0, "text": "\u659c\u9633\u65e0\u9650\u65e0\u5948\u53ea\u4e00\u606f\u95f4\u707f\u70c2"},
+                   {"atMs": 5000, "text": "an extra line"}, {"atMs": 9000, "text": "hello world"}]
+        other = [{"atMs": 100, "text": "\u659c\u967d\u7121\u9650\u7121\u5948\u53ea\u4e00\u606f\u9593\u71e6\u721b",
+                  "romanization": "ce joeng mou haan"},
+                 {"atMs": 8000, "text": "Hello, world!", "translation": "hi"}]
+        self.assertEqual(lyrics.align_by_text(library, other), 2)
+        self.assertEqual(library[0]["romanization"], "ce joeng mou haan")
+        self.assertNotIn("translation", library[1])
+        self.assertEqual(library[2]["translation"], "hi")
+
+
 if __name__ == "__main__":
     unittest.main()
