@@ -1120,6 +1120,37 @@ def kana_readings(key: str) -> set[str]:
     return readings
 
 
+def build_romaji_kana() -> dict[str, str]:
+    """Romaji syllable -> kana, the reverse of kana_readings: each kana's usual
+    spelling first, so "wa" is わ rather than the particle は."""
+    keys = [key for key in KANA_READINGS if key not in SMALL_Y and key not in SMALL_VOWELS and key != "ゎ"]
+    keys += [key + small for key in keys for small in SMALL_Y
+             if any(reading.endswith("i") for reading in KANA_READINGS[key]) and key != "い"]
+    keys += ["っ" + key for key in list(keys)]
+    table: dict[str, str] = {}
+    for key in keys:
+        readings = kana_readings(key)
+        primary = KANA_READINGS[key][0] if key in KANA_READINGS else None
+        if primary and primary not in table:
+            table[primary] = key
+    for key in keys:
+        for reading in sorted(kana_readings(key)):
+            table.setdefault(reading, key)
+    return table
+
+
+ROMAJI_KANA: dict[str, str] = {}
+
+
+def romaji_to_kana(tokens: list[str]) -> str:
+    """Kana for a kanji's romanized syllables, or "" when one is not a kana
+    spelling (an English word, a typo)."""
+    if not ROMAJI_KANA:
+        ROMAJI_KANA.update(build_romaji_kana())
+    kana = [ROMAJI_KANA.get(token) for token in tokens]
+    return "" if not kana or any(part is None for part in kana) else "".join(kana)  # type: ignore[arg-type]
+
+
 def reading_units(text: str, group_han: bool) -> list[list[str]]:
     """Split a line into [surface, kind, key]: han, kana, long (a lengthening
     mark or a trailing small tsu, which may or may not be spelled), latin, or
@@ -1158,8 +1189,27 @@ def reading_units(text: str, group_han: bool) -> list[list[str]]:
 
 
 def ruby_segments(text: object, romanization: object) -> list[list[str]] | None:
-    """Pair each part of a line with the syllables that spell it, or None when
-    they cannot be paired with confidence."""
+    """Pair each part of a line with its reading, or None when the syllables
+    cannot be paired with the words with confidence.
+
+    Japanese reads like furigana: kana over the kanji and nothing over the
+    kana, whose sound is already written; the romanization runs underneath as
+    a line of its own. Chinese has a syllable over each character instead."""
+    aligned = align_reading(text, romanization)
+    if aligned is None:
+        return None
+    japanese = any(unit[1] == "kana" for unit in aligned)
+    segments = []
+    for surface, kind, _, spelled in aligned:
+        if japanese:
+            segments.append([surface, romaji_to_kana(spelled) if kind == "han" else ""])
+        else:
+            segments.append([surface, " ".join(spelled)])
+    return segments if len(segments) > 1 else None
+
+
+def align_reading(text: object, romanization: object) -> list[tuple[str, str, str, list[str]]] | None:
+    """Each unit of the line with the syllables that spell it."""
     line = str(text or "")
     tokens = [re.sub(r"[^a-z]", "", token.lower()) for token in str(romanization or "").split()]
     tokens = [token for token in tokens if token]
@@ -1201,16 +1251,15 @@ def ruby_segments(text: object, romanization: object) -> list[list[str]] | None:
                     step[index + 1][used + taken] = (used, taken)
     if cost[count][width] > max(1, sounding // 8):
         return None
-    segments: list[list[str]] = []
+    aligned: list[tuple[str, str, str, list[str]]] = []
     used = width
     for index in range(count, 0, -1):
         previous, taken = step[index][used]  # type: ignore[misc]
-        surface, kind, _ = units[index - 1]
-        separator = "" if japanese else " "
-        segments.append([surface, separator.join(tokens[previous:previous + taken])])
+        surface, kind, key = units[index - 1]
+        aligned.append((surface, kind, key, tokens[previous:previous + taken]))
         used = previous
-    segments.reverse()
-    return segments if len(segments) > 1 else None
+    aligned.reverse()
+    return aligned
 
 
 def add_ruby(payload: dict[str, object]) -> dict[str, object]:
@@ -1220,6 +1269,9 @@ def add_ruby(payload: dict[str, object]) -> dict[str, object]:
             segments = ruby_segments(line.get("text"), line.get("romanization"))
             if segments:
                 line["ruby"] = segments
+                # "kana": furigana, and the romanization still needs its own line.
+                line["rubyScript"] = "kana" if any(hiragana(character) in KANA_READINGS
+                                                   for character in str(line.get("text", ""))) else "latin"
     return payload
 
 

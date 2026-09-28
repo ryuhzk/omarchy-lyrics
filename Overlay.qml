@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
@@ -35,6 +36,15 @@ PanelWindow {
   readonly property bool atRight: position !== "center"
 
   readonly property var lines: lyricsService ? lyricsService.lines : []
+
+  // CJK text in a CJK face rather than the monospace UI font: Japanese in the
+  // Japanese one, so its kanji take their Japanese shapes, and the rest in the
+  // Chinese one. Readings and romanization share the Japanese face, whose
+  // Latin is proportional.
+  readonly property string readingFamily: "Noto Sans CJK JP"
+  function familyFor(text) {
+    return /[\u3040-\u30ff]/.test(String(text || "")) ? "Noto Sans CJK JP" : "Noto Sans CJK SC"
+  }
   // Resolved through the same call and the same offset the bar widget uses, so
   // the two surfaces cannot disagree about which line is current.
   readonly property int index: lyricsService
@@ -59,16 +69,22 @@ PanelWindow {
 
   readonly property string currentText: intro ? lyricsService.title : lineAt(index)
   readonly property string nextText: lineAt(index + 1)
-  // The translation or romanization of the line being sung, directly under it.
+  // Under the line being sung: its romanization (unless it already sits over
+  // the characters), then its translation. The intro puts the artist there.
   readonly property string secondaryText: intro ? lyricsService.artist
     : lyricsService && index >= 0 && index < lines.length
-      ? lyricsService.secondaryFor(lines[index]) : ""
+      ? lyricsService.romanizationFor(lines[index]) : ""
   // Each syllable of the romanization over the characters it spells, when the
   // backend could pair them; then only the translation is left for underneath.
   readonly property var rubyPairs: lyricsService && index >= 0 && index < lines.length
     ? lyricsService.rubyFor(lines[index]) : []
-  readonly property string besideRubyText: lyricsService && index >= 0 && index < lines.length
-    ? lyricsService.secondaryBesideRuby(lines[index]) : ""
+  // Furigana leaves the romanization to its own line; a syllable over each
+  // Chinese character already is the romanization.
+  readonly property bool rubyIsKana: lyricsService && index >= 0 && index < lines.length
+    ? lines[index].rubyScript === "kana" : false
+  property bool shownRubyIsKana: false
+  readonly property string besideRubyText: !intro && lyricsService && index >= 0 && index < lines.length
+    ? lyricsService.translationFor(lines[index]) : ""
 
   // Shown only while something is actually playing and actually has lyrics.
   // A paused track keeps its lyrics loaded, so `isPlaying` is what separates
@@ -105,6 +121,7 @@ PanelWindow {
       shownCurrent = currentText
       shownSecondary = secondaryText
       shownRuby = rubyPairs
+      shownRubyIsKana = rubyIsKana
       shownBesideRuby = besideRubyText
       shownNext = nextText
       return
@@ -114,7 +131,10 @@ PanelWindow {
   onNextTextChanged: if (shownCurrent === "") shownNext = nextText
   // A setting switched mid-line takes effect at once, without a transition.
   onSecondaryTextChanged: if (!lineChange.running) shownSecondary = secondaryText
-  onRubyPairsChanged: if (!lineChange.running) shownRuby = rubyPairs
+  onRubyPairsChanged: if (!lineChange.running) {
+    shownRuby = rubyPairs
+    shownRubyIsKana = rubyIsKana
+  }
   onBesideRubyTextChanged: if (!lineChange.running) shownBesideRuby = besideRubyText
 
   SequentialAnimation {
@@ -130,6 +150,7 @@ PanelWindow {
         root.shownCurrent = root.currentText
         root.shownSecondary = root.secondaryText
         root.shownRuby = root.rubyPairs
+        root.shownRubyIsKana = root.rubyIsKana
         root.shownBesideRuby = root.besideRubyText
         root.shownNext = root.nextText
         lineColumn.y = 10
@@ -173,18 +194,28 @@ PanelWindow {
     Column {
       id: lineColumn
       width: parent.width
-      spacing: Math.round(root.fontSize * 0.3)
+      spacing: Math.round(root.fontSize * 0.18)
 
-      // No outline: a hard black edge reads as a sticker on a light wallpaper
-      // and clogs the thin strokes of Han characters. Each line instead casts
-      // a faint one-pixel lift in the theme's background colour, which is
-      // invisible where the wallpaper already contrasts and just enough where
-      // it does not.
+      // A soft shadow rather than an outline or a bevel: it separates the
+      // words from a light wallpaper and a dark window alike, where a hard
+      // black edge reads as a sticker and clogs the thin strokes of Han
+      // characters, and a lift in the theme's own background colour looks
+      // embossed on anything darker than the theme.
+      layer.enabled: true
+      layer.effect: MultiEffect {
+        shadowEnabled: true
+        shadowColor: Qt.rgba(0, 0, 0, 0.55)
+        shadowBlur: 0.45
+        shadowVerticalOffset: 1
+        shadowHorizontalOffset: 0
+        blurMax: 16
+      }
 
       Row {
         id: rubyRow
 
         x: root.atRight ? parent.width - width : Math.round((parent.width - width) / 2)
+        bottomPadding: Math.round(root.fontSize * 0.08)
         visible: root.rubyShown
 
         Repeater {
@@ -194,30 +225,35 @@ PanelWindow {
             id: pair
 
             required property var modelData
-            leftPadding: Math.round(root.fontSize * 0.05)
+            leftPadding: root.shownRubyIsKana ? 0 : Math.round(root.fontSize * 0.06)
             rightPadding: leftPadding
 
-            Text {
+            // Always takes its height, reading or not, so every character in
+            // the row stands on the same baseline. (A positioner skips items
+            // of zero width, which an empty Text is.)
+            Item {
               anchors.horizontalCenter: parent.horizontalCenter
-              height: Math.round(root.fontSize * 0.62)
-              text: pair.modelData[1]
-              color: Qt.alpha(Color.accent, 0.8)
-              font.family: Style.font.family
-              font.pixelSize: Math.round(root.fontSize * 0.42)
-              verticalAlignment: Text.AlignBottom
-              style: Text.Raised
-              styleColor: Qt.alpha(Color.background, 0.5)
+              width: Math.max(1, reading.implicitWidth)
+              height: Math.round(root.fontSize * 0.5)
+
+              Text {
+                id: reading
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                text: pair.modelData[1]
+                color: Qt.alpha(Color.accent, 0.9)
+                font.family: root.readingFamily
+                font.pixelSize: Math.round(root.fontSize * 0.4)
+              }
             }
 
             Text {
               anchors.horizontalCenter: parent.horizontalCenter
               text: pair.modelData[0]
               color: Color.accent
-              font.family: Style.font.family
+              font.family: root.familyFor(root.shownCurrent)
               font.pixelSize: root.fontSize
-              font.weight: Font.DemiBold
-              style: Text.Raised
-              styleColor: Qt.alpha(Color.background, 0.5)
+              font.weight: Font.Bold
             }
           }
         }
@@ -233,40 +269,50 @@ PanelWindow {
         // this with everything else rather than leaving one white line behind.
         color: Color.accent
         Behavior on color { ColorAnimation { duration: 160 } }
-        font.family: Style.font.family
+        font.family: root.familyFor(root.shownCurrent)
         font.pixelSize: root.fontSize
-        font.weight: Font.DemiBold
-        style: Text.Raised
-        styleColor: Qt.alpha(Color.background, 0.5)
-        font.letterSpacing: root.fontSize * 0.04
+        font.weight: Font.Bold
+        font.letterSpacing: root.fontSize * 0.02
         wrapMode: Text.WordWrap
       }
 
+      // The reading to sing: the romanization, unless it already sits over
+      // the characters.
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
-        text: root.rubyShown ? root.shownBesideRuby : root.shownSecondary
-        color: Qt.alpha(Color.accent, 0.8)
-        font.family: Style.font.family
-        font.pixelSize: Math.round(root.fontSize * 0.55)
-        style: Text.Raised
-        styleColor: Qt.alpha(Color.background, 0.5)
-        font.letterSpacing: root.fontSize * 0.02
+        text: root.rubyShown && !root.shownRubyIsKana ? "" : root.shownSecondary
+        color: Qt.alpha(Color.accent, 0.85)
+        font.family: root.readingFamily
+        font.pixelSize: Math.round(root.fontSize * 0.5)
+        font.weight: Font.Medium
+        font.wordSpacing: root.fontSize * 0.08
         wrapMode: Text.WordWrap
         visible: text !== ""
       }
 
+      // The meaning, a step quieter than the reading above it.
+      Text {
+        width: parent.width
+        horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
+        text: root.shownBesideRuby
+        color: Qt.alpha(Color.accent, 0.72)
+        font.family: root.familyFor(root.shownBesideRuby)
+        font.pixelSize: Math.round(root.fontSize * 0.52)
+        wrapMode: Text.WordWrap
+        visible: text !== ""
+      }
+
+      // What comes next, dimmed so it reads as a preview.
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownNext
-        topPadding: Math.round(root.fontSize * 0.15)
-        color: Qt.alpha(Color.foreground, 0.55)
-        font.family: Style.font.family
-        font.pixelSize: Math.round(root.fontSize * 0.68)
-        style: Text.Raised
-        styleColor: Qt.alpha(Color.background, 0.5)
-        font.letterSpacing: root.fontSize * 0.02
+        topPadding: Math.round(root.fontSize * 0.22)
+        color: Qt.alpha(Color.accent, 0.45)
+        font.family: root.familyFor(root.shownNext)
+        font.pixelSize: Math.round(root.fontSize * 0.62)
+        font.weight: Font.Medium
         wrapMode: Text.WordWrap
         visible: text !== ""
       }

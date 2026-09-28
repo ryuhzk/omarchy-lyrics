@@ -85,13 +85,22 @@ Item {
 
   // The second line for a lyric: a translation to read the meaning, or a
   // romanization to sing along to, as the setting asks.
+  // Auto shows everything a line has, the way Feishin does: the reading to
+  // sing, then the meaning. The other modes pick one.
+  function romanizationFor(line) {
+    if (!line || (secondaryMode !== "auto" && secondaryMode !== "romanization")) return ""
+    return String(line.romanization || "")
+  }
+
+  function translationFor(line) {
+    if (!line || (secondaryMode !== "auto" && secondaryMode !== "translation")) return ""
+    return String(line.translation || "")
+  }
+
   function secondaryFor(line) {
-    if (!line || secondaryMode === "off") return ""
-    var translation = String(line.translation || "")
-    var romanization = String(line.romanization || "")
-    if (secondaryMode === "translation") return translation
-    if (secondaryMode === "romanization") return romanization
-    return translation !== "" ? translation : romanization
+    return [romanizationFor(line), translationFor(line)].filter(function(value) {
+      return value !== ""
+    }).join("\n")
   }
 
   // The reading of each part of a line, to set above its characters, when the
@@ -103,7 +112,7 @@ Item {
 
   // What still goes under a line whose romanization already sits above it.
   function secondaryBesideRuby(line) {
-    return line && secondaryMode === "auto" ? String(line.translation || "") : ""
+    return translationFor(line)
   }
 
   onLyricsSourceChanged: requestLyrics(false)
@@ -263,7 +272,8 @@ Item {
           text: String(line.text || "").slice(0, 4096),
           translation: String(line.translation || "").slice(0, 4096),
           romanization: String(line.romanization || "").slice(0, 4096),
-          ruby: safeRuby(line.ruby)
+          ruby: safeRuby(line.ruby),
+          rubyScript: line.rubyScript === "kana" ? "kana" : "latin"
         })
       }
       lines = safeLines
