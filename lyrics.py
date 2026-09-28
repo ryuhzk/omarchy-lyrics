@@ -43,6 +43,11 @@ NETEASE_SEARCH_LIMIT = 10
 NETEASE_SEARCH_SONGS = 1
 NETEASE_SEARCH_LYRICS = 1006
 JELLYFIN_ENV = "omarchy-lyrics/jellyfin.env"
+# The NetEase song the user picked by hand for a track whose name finds the
+# wrong one, keyed by title and artist. Kept with the settings rather than the
+# cache: clearing the cache must not forget a choice.
+CHOICES_FILE = "omarchy-lyrics/choices.json"
+MAX_CHOICES = 5000
 ITEM_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 # Jellyfin times lyric lines in ticks of 100 ns.
 TICKS_PER_MS = 10_000
@@ -767,6 +772,107 @@ def fetch_netease(
     return payload_from_track(None)
 
 
+def config_base(config_home: str = "") -> Path:
+    return Path(config_home or os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
+def choice_key(metadata: dict[str, object]) -> str:
+    return f"{canonical(metadata.get('title'))}\u001f{canonical(metadata.get('artist'))}"
+
+
+def read_choices(config_home: str = "") -> dict[str, dict[str, object]]:
+    try:
+        with (config_base(config_home) / CHOICES_FILE).open("rb") as handle:
+            data = json.loads(handle.read(MAX_CACHE_BYTES).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: value for key, value in data.items()
+            if isinstance(key, str) and isinstance(value, dict) and isinstance(value.get("netease"), int)}
+
+
+def read_choice(metadata: dict[str, object], config_home: str = "") -> int:
+    if not canonical(metadata.get("title")):
+        return 0
+    return int(read_choices(config_home).get(choice_key(metadata), {}).get("netease", 0))
+
+
+def write_choice(metadata: dict[str, object], song_id: int, config_home: str = "") -> None:
+    """Remember `song_id` for this track, or forget the choice when it is 0."""
+    if not canonical(metadata.get("title")):
+        return
+    choices = read_choices(config_home)
+    choices.pop(choice_key(metadata), None)
+    if song_id > 0:
+        choices[choice_key(metadata)] = {
+            "netease": song_id,
+            "title": clean_metadata(metadata.get("title")),
+            "artist": clean_metadata(metadata.get("artist")),
+        }
+    path = config_base(config_home) / CHOICES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kept = dict(list(choices.items())[-MAX_CHOICES:])
+    descriptor, temporary = tempfile.mkstemp(prefix=".choices.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(kept, handle, ensure_ascii=False, indent=1)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise LyricsError("Could not save the chosen song") from None
+
+
+def search_results(keyword: str, opener: Callable[..., Any] = urllib.request.urlopen) -> list[dict[str, object]]:
+    """NetEase songs for the search box in the panel."""
+    results = []
+    for song in netease_search({}, opener, keyword=clean_metadata(keyword)):
+        if not isinstance(song.get("id"), int):
+            continue
+        artists = song.get("artists") if isinstance(song.get("artists"), list) else []
+        album = song.get("album") if isinstance(song.get("album"), dict) else {}
+        results.append({
+            "id": song["id"],
+            "title": bounded_remote_text(song.get("name")),
+            "artist": ", ".join(bounded_remote_text(entry.get("name")) for entry in artists if isinstance(entry, dict)),
+            "album": bounded_remote_text(album.get("name")),
+            "duration": finite_float(finite_float(song.get("duration"), maximum=3_600_000) / 1000),
+        })
+    return results
+
+
+def fetch_chosen(
+    metadata: dict[str, object],
+    song_id: int,
+    library: dict[str, object] | None,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> dict[str, object] | None:
+    """Lyrics for a track the user matched to a NetEase song by hand.
+
+    The library's own lyrics keep their timing when the chosen song says the
+    same words, and only borrow its translation and romanization; when they do
+    not (the library has the wrong song's lyrics), the chosen song's are used.
+    """
+    chosen = netease_payload({"id": song_id}, netease_lyric_data(song_id, opener))
+    if chosen is None:
+        return None
+    chosen["choice"] = song_id
+    lines = library.get("lines") if library else None
+    if isinstance(lines, list) and lines:
+        trial = [dict(line) for line in lines]
+        if align_by_text(trial, chosen["lines"]) >= len(lines) * MIN_ALIGNED_SHARE:
+            result = dict(library)
+            result["lines"] = trial
+            result["secondarySource"] = "netease"
+            result["choice"] = song_id
+            return result
+    return chosen
+
+
 def fetch_remote(
     metadata: dict[str, object],
     source: str = "netease",
@@ -782,6 +888,11 @@ def fetch_remote(
     live = fetchers is None
     if live:
         library = fetch_jellyfin(jellyfin_item_for(metadata))
+        chosen_id = int(metadata.get("choice") or 0)
+        if chosen_id > 0:
+            chosen = fetch_chosen(metadata, chosen_id, library)
+            if chosen is not None:
+                return chosen
         if library is not None and library.get("lines"):
             return enrich_from_netease(library, metadata)
     fetchers = fetchers or {"netease": fetch_netease, "lrclib": fetch_lrclib}
@@ -828,6 +939,7 @@ def cache_key(metadata: dict[str, object], source: str = "netease") -> str:
         {
             "version": CACHE_VERSION,
             "source": source,
+            "choice": int(metadata.get("choice") or 0),
             "item": str(metadata.get("itemId") or ""),
             "title": clean_metadata(metadata.get("title")),
             "artist": clean_metadata(metadata.get("artist")),
@@ -1074,11 +1186,25 @@ def parser() -> argparse.ArgumentParser:
                        help="Source asked first; the other is the fallback")
     fetch.add_argument("--item-id", default="",
                        help="Jellyfin item id from the player, for the library's own lyrics")
+    fetch.add_argument("--choose", type=int, default=-1,
+                       help="Remember this NetEase song id for the track (0 forgets the choice)")
+    search = subparsers.add_parser("search", help="Search NetEase songs as one JSON object")
+    search.add_argument("keyword")
     return root
 
 
 def main(arguments: list[str] | None = None) -> int:
     options = parser().parse_args(arguments)
+    if options.command == "search":
+        try:
+            results = search_results(options.keyword) if clean_metadata(options.keyword) else []
+            print(json.dumps({"schemaVersion": SCHEMA_VERSION, "ok": True, "results": results},
+                             ensure_ascii=False, separators=(",", ":")))
+            return 0
+        except LyricsError as error:
+            print(json.dumps({"schemaVersion": SCHEMA_VERSION, "ok": False, "error": str(error), "results": []},
+                             ensure_ascii=False, separators=(",", ":")))
+            return 1
     metadata = {
         "title": clean_metadata(options.title),
         "artist": clean_metadata(options.artist),
@@ -1087,8 +1213,11 @@ def main(arguments: list[str] | None = None) -> int:
         "itemId": options.item_id.lower() if ITEM_ID_RE.fullmatch(options.item_id.lower()) else "",
     }
     try:
-        result = add_ruby(fetch_with_cache(metadata, cache_root(options.cache_dir), options.refresh,
-                                           source=options.source))
+        if options.choose >= 0:
+            write_choice(metadata, options.choose)
+        metadata["choice"] = read_choice(metadata)
+        result = add_ruby(fetch_with_cache(metadata, cache_root(options.cache_dir),
+                                           options.refresh or options.choose >= 0, source=options.source))
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 0
     except LyricsError as error:

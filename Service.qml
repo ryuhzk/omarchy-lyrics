@@ -33,6 +33,13 @@ Item {
   property string errorText: ""
   property var matchedTrack: ({})
   property bool cached: false
+  // The NetEase song picked by hand for this track (0 when none), and the
+  // search that finds it: "idle", "searching", "done" or "error".
+  property int chosenId: 0
+  property var searchResults: []
+  property string searchStatus: "idle"
+  property string searchError: ""
+  property string searchKeyword: ""
   property int playbackPositionMs: 0
   property int lastTickMs: 0
   property int lastMprisPositionMs: -1
@@ -163,6 +170,7 @@ Item {
     errorText = ""
     matchedTrack = ({})
     cached = false
+    chosenId = 0
   }
 
   function resetPositionTracking() {
@@ -176,7 +184,7 @@ Item {
     positionMode = observed > 0 ? "mpris" : "estimated"
   }
 
-  function requestLyrics(refresh) {
+  function requestLyrics(refresh, choose) {
     requestSerial += 1
     resetPositionTracking()
     if (!hasMedia) {
@@ -192,7 +200,8 @@ Item {
       album: boundedMetadata(album),
       duration: activePlayer && activePlayer.lengthSupported ? Number(activePlayer.length) : 0,
       itemId: itemId,
-      refresh: refresh === true
+      refresh: refresh === true,
+      choose: choose === undefined ? -1 : Math.max(0, Math.floor(Number(choose) || 0))
     }
     lyricsStatus = "loading"
     errorText = ""
@@ -217,6 +226,7 @@ Item {
       "--item-id", request.itemId || ""
     ]
     if (request.refresh) command.push("--refresh")
+    if (request.choose >= 0) command.push("--choose", String(request.choose))
     fetchProcess.command = command
     fetchProcess.running = true
   }
@@ -261,6 +271,7 @@ Item {
       lyricsStatus = String(response.status || "not_found")
       matchedTrack = response.track && typeof response.track === "object" ? response.track : ({})
       cached = response.cached === true
+      chosenId = Math.max(0, Math.floor(Number(response.choice) || 0))
       errorText = ""
     } catch (error) {
       clearLyrics("error")
@@ -307,7 +318,64 @@ Item {
     return true
   }
 
-  onTrackKeyChanged: requestLyrics(false)
+  // Search NetEase by hand, for a track whose name finds the wrong song.
+  function searchSongs(keyword) {
+    var text = boundedMetadata(String(keyword || "").trim())
+    if (text === "") return
+    searchKeyword = text
+    searchResults = []
+    searchError = ""
+    searchStatus = "searching"
+    searchProcess.running = false
+    searchProcess.command = ["python3", helperPath, "search", text]
+    searchProcess.running = true
+  }
+
+  function applySearch(raw) {
+    try {
+      var response = JSON.parse(String(raw || "{}"))
+      if (!response || response.schemaVersion !== 1) throw new Error("unsupported response")
+      var results = []
+      var source = Array.isArray(response.results) ? response.results : []
+      for (var i = 0; i < source.length && i < 20; i++) {
+        var entry = source[i]
+        if (!entry || !isFinite(Number(entry.id)) || Number(entry.id) <= 0) continue
+        results.push({
+          id: Math.floor(Number(entry.id)),
+          title: String(entry.title || "").slice(0, 256),
+          artist: String(entry.artist || "").slice(0, 256),
+          album: String(entry.album || "").slice(0, 256),
+          duration: Math.max(0, Number(entry.duration) || 0)
+        })
+      }
+      searchResults = results
+      searchError = response.ok === true ? "" : String(response.error || "Search failed")
+      searchStatus = response.ok === true ? "done" : "error"
+    } catch (error) {
+      searchResults = []
+      searchError = "Search failed"
+      searchStatus = "error"
+    }
+  }
+
+  function closeSearch() {
+    searchProcess.running = false
+    searchResults = []
+    searchError = ""
+    searchStatus = "idle"
+  }
+
+  // Use this NetEase song for the playing track from now on; 0 goes back to
+  // finding it automatically.
+  function chooseSong(songId) {
+    closeSearch()
+    requestLyrics(true, songId)
+  }
+
+  onTrackKeyChanged: {
+    closeSearch()
+    requestLyrics(false)
+  }
   Component.onCompleted: requestLyrics(false)
 
   Instantiator {
@@ -342,6 +410,15 @@ Item {
     onExited: function(exitCode) {
       root.applyResponse(root.fetchOutput, exitCode)
       Qt.callLater(root.pumpFetch)
+    }
+  }
+
+  Process {
+    id: searchProcess
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applySearch(text)
     }
   }
 

@@ -83,6 +83,14 @@ Jellyfin is skipped.
 - Scroll up or down: previous or next track
 - Escape: close the panel
 
+The panel also has previous, play/pause and next buttons, and a search box for
+tracks whose name finds the wrong song, or none: search NetEase by the title or
+a line of the lyrics and pick the right result. The choice is remembered for
+that track in `~/.config/omarchy-lyrics/choices.json`. When your library has
+its own lyrics with the same words, they keep their timing and only take the
+romanization and translation from the song you picked. **Undo** under the
+search box goes back to finding the song automatically.
+
 ## Settings
 
 Change them in **Setup → Plugins → Lyrics**, or from the command line:
