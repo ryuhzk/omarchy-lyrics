@@ -289,6 +289,20 @@ class JellyfinTests(unittest.TestCase):
         self.assertEqual(lyrics.align_by_text(lines, other), 2)
         self.assertEqual([line["romanization"] for line in lines], ["one two", "three"])
 
+    def test_a_line_in_the_other_script_is_placed_by_its_neighbours(self):
+        lines = [{"text": "wxyz"}, {"text": "abcd"}, {"text": "WXYZ"}, {"text": "efgh"}]
+        other = [{"text": "pqrs", "romanization": "zero"}, {"text": "abcd", "romanization": "one"},
+                 {"text": "PQRS", "romanization": "two"}, {"text": "efgh", "romanization": "three"}]
+        self.assertEqual(lyrics.align_by_text(lines, other), 4)
+        self.assertEqual([line.get("romanization") for line in lines], ["zero", "one", "two", "three"])
+
+    def test_a_line_between_two_candidates_is_left_alone(self):
+        lines = [{"text": "abcd"}, {"text": "wxyz"}, {"text": "efgh"}]
+        other = [{"text": "abcd", "romanization": "one"}, {"text": "pqrs", "romanization": "x"},
+                 {"text": "tuvw", "romanization": "y"}, {"text": "efgh", "romanization": "three"}]
+        self.assertEqual(lyrics.align_by_text(lines, other), 2)
+        self.assertNotIn("romanization", lines[1])
+
     def test_chinese_readings_pair_one_syllable_per_character(self):
         segments = lyrics.ruby_segments("\u6211\u6068 \u6211 Wo...", "o han o WOO")
         self.assertEqual(segments, [["\u6211", "o"], ["\u6068", "han"], [" ", ""], ["\u6211", "o"],

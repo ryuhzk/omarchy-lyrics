@@ -35,7 +35,7 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
@@ -514,7 +514,9 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
     matched = 0
     position = 0
     keys = [line_key(entry.get("text")) for entry in other]
-    for line in lines:
+    # Where in `other` each line ended up: its first and last counterpart.
+    placed: list[tuple[int, int] | None] = [None] * len(lines)
+    for number, line in enumerate(lines):
         key = line_key(line.get("text"))
         # Near the last match first; then anywhere, since a chorus the other
         # source repeats in a different order still carries the same extras.
@@ -538,8 +540,34 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
                     if any(parts):
                         line[field] = " ".join(part for part in parts if part)
                 matched += 1
+                placed[number] = (span[0], span[-1])
                 position = span[-1] + 1
                 break
+    # A line written in the other script with too few characters in common
+    # (隨浪隨風飄蕩 and 随浪随风飘荡 share one) is still pinned down by its
+    # neighbours: when exactly one line of the same length lies between where
+    # the lines around it matched, that is the one. At either end of the song a
+    # single matched neighbour is enough.
+    for number, line in enumerate(lines):
+        if placed[number] is not None:
+            continue
+        before = placed[number - 1] if number > 0 else (-1, -1)
+        after = placed[number + 1] if number + 1 < len(lines) else (len(other), len(other))
+        if before is None or after is None:
+            continue
+        if number == 0 and after[0] == len(other) or number == len(lines) - 1 and before[1] == -1:
+            continue
+        candidate = before[1] + 1
+        if after[0] - before[1] != 2 or not 0 <= candidate < len(other):
+            continue
+        if len(keys[candidate]) != len(line_key(line.get("text"))):
+            continue
+        for field in ("translation", "romanization"):
+            value = other[candidate].get(field)
+            if value:
+                line[field] = value
+        placed[number] = (candidate, candidate)
+        matched += 1
     return matched
 
 
