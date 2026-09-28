@@ -35,7 +35,7 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 11
+CACHE_VERSION = 12
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
 # The v1 endpoint: everything the old one returns, plus "yrc", the time of
@@ -253,7 +253,7 @@ def payload_from_track(track: dict[str, object] | None) -> dict[str, object]:
     synced = bounded_remote_text(track.get("syncedLyrics"), MAX_LYRICS_CHARS)
     plain = bounded_remote_text(track.get("plainLyrics"), MAX_LYRICS_CHARS)
     instrumental = track.get("instrumental") is True
-    lines = fold_same_time(parse_lrc(synced))
+    lines = fold_same_time(collapse_word_timed(parse_lrc(synced)))
     if instrumental:
         status = "instrumental"
     elif lines or plain:
@@ -442,6 +442,64 @@ def script_of(text: str) -> str:
     letters = sum(1 for character in text if character.isascii() and character.isalpha())
     han = sum(1 for character in text if HAN_RE.match(character))
     return "latin" if letters > han else "han"
+
+
+# The longest a character's time may run on into a pause after it.
+MAX_SYLLABLE_MS = 1500
+
+
+def collapse_word_timed(lines: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Undo a word-timed line spread into copies of itself.
+
+    A lyrics file that times every character or word ("[00:40.62]で[00:40.84]
+    も...") reaches us as the whole line once per timestamp: fifteen copies of
+    a fifteen-character line. Shown like that, each copy would restart the
+    line. Collapsed, the copies' times become the time of each character - the
+    best karaoke there is, timed to this very recording. When the number of
+    copies fits the line's characters, its sounding characters or its words
+    (or a whole multiple of them, for a line sung twice), they are used so;
+    otherwise the line is kept once, untimed."""
+    result: list[dict[str, object]] = []
+    index = 0
+    while index < len(lines):
+        text = str(lines[index].get("text", ""))
+        end = index
+        while end + 1 < len(lines) and str(lines[end + 1].get("text", "")) == text:
+            end += 1
+        starts = [int(line["atMs"]) for line in lines[index:end + 1]]
+        after = int(lines[end + 1]["atMs"]) if end + 1 < len(lines) else starts[-1] + MAX_SYLLABLE_MS
+        index = end + 1
+        if len(starts) == 1:
+            result.append(dict(lines[index - 1]))
+            continue
+        sounding = [character for character in text if is_sounding(character)]
+        words = [[character for character in word if is_sounding(character)] for word in text.split()]
+        words = [word for word in words if word]
+        units = next((count for count in (len(text), len(sounding), len(words))
+                      if count > 1 and len(starts) % count == 0), 0)
+        if not units:
+            result.append({"atMs": starts[0], "text": text})
+            continue
+        for repeat in range(len(starts) // units):
+            chunk = starts[repeat * units:(repeat + 1) * units]
+            following = starts[(repeat + 1) * units] if (repeat + 1) * units < len(starts) else after
+            ends = chunk[1:] + [following]
+            spans = [[start - chunk[0], max(0, min(stop - start, MAX_SYLLABLE_MS))] for start, stop in zip(chunk, ends)]
+            if units == len(text):
+                times = spans
+            elif units == len(sounding):
+                times = spread_times(text, spans)
+            else:
+                per_character = []
+                for word, (start, length) in zip(words, spans):
+                    share = length // len(word)
+                    per_character += [[start + number * share, share] for number in range(len(word))]
+                times = spread_times(text, per_character)
+            line = {"atMs": chunk[0], "text": text}
+            if times:
+                line["karaoke"] = times
+            result.append(line)
+    return result
 
 
 def fold_same_time(lines: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -897,7 +955,7 @@ def fetch_jellyfin(
     if not plain:
         return None
     lines.sort(key=lambda line: int(line["atMs"]))
-    lines = fold_same_time(strip_leading_credits(lines))
+    lines = fold_same_time(strip_leading_credits(collapse_word_timed(lines)))
     return {
         "schemaVersion": SCHEMA_VERSION,
         "ok": True,

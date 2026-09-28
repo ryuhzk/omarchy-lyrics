@@ -316,6 +316,22 @@ class JellyfinTests(unittest.TestCase):
         self.assertEqual([line["text"] for line in lyrics.strip_leading_credits(lines)],
                          ["Title - Artist", "words"])
 
+    def test_a_line_spread_into_a_copy_per_character_is_collapsed_and_timed(self):
+        lines = [{"atMs": at, "text": "ab c"} for at in (100, 300, 500, 600)] + [{"atMs": 900, "text": "next"}]
+        collapsed = lyrics.collapse_word_timed(lines)
+        self.assertEqual([line["text"] for line in collapsed], ["ab c", "next"])
+        self.assertEqual(collapsed[0]["atMs"], 100)
+        self.assertEqual(collapsed[0]["karaoke"], [[0, 200], [200, 200], [400, 100], [500, 300]])
+
+    def test_a_timed_line_sung_twice_in_a_row_stays_two_lines(self):
+        lines = [{"atMs": at, "text": "ab"} for at in (0, 100, 1000, 1100)]
+        collapsed = lyrics.collapse_word_timed(lines)
+        self.assertEqual([line["atMs"] for line in collapsed], [0, 1000])
+
+    def test_copies_that_fit_nothing_are_kept_once_untimed(self):
+        lines = [{"atMs": at, "text": "abcd"} for at in (0, 100, 200)]
+        self.assertEqual(lyrics.collapse_word_timed(lines), [{"atMs": 0, "text": "abcd"}])
+
     def test_word_times_become_times_per_character(self):
         timed = lyrics.parse_yrc("[1000,900](1000,300,0)ab(1300,200,0)c (1500,400,0)d")
         lines = [{"atMs": 1100, "text": "abc d"}]
