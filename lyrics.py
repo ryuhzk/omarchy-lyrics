@@ -35,10 +35,16 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 # Part of every cache key: bumping it retires entries written by older rules,
 # such as a "not found" from before the album stopped filtering LRCLIB searches.
-CACHE_VERSION = 10
+CACHE_VERSION = 11
 API_BASE_URL = "https://lrclib.net/api"
 NETEASE_SEARCH_URL = "https://music.163.com/api/search/get"
-NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric"
+# The v1 endpoint: everything the old one returns, plus "yrc", the time of
+# every character, for the karaoke sweep.
+NETEASE_LYRIC_URL = "https://music.163.com/api/song/lyric/v1"
+YRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+YRC_WORD_RE = re.compile(r"\((\d+),(\d+),\d+\)([^(]*)")
+# How far a word-timed line may start from the timed line it belongs to.
+KARAOKE_TOLERANCE_MS = 1500
 NETEASE_SEARCH_LIMIT = 10
 NETEASE_SEARCH_SONGS = 1
 NETEASE_SEARCH_LYRICS = 1006
@@ -457,6 +463,89 @@ def fold_same_time(lines: list[dict[str, object]]) -> list[dict[str, object]]:
     return result
 
 
+def parse_yrc(raw: object) -> list[dict[str, object]]:
+    """NetEase's word-timed lyrics: "[start,duration](start,duration,0)word...",
+    all in milliseconds from the start of the song."""
+    result = []
+    for raw_line in str(raw or "")[:MAX_LYRICS_CHARS].splitlines():
+        match = YRC_LINE_RE.match(raw_line.strip())
+        if not match:
+            continue
+        words = [(int(start), int(length), text) for start, length, text in YRC_WORD_RE.findall(match.group(3)) if text]
+        if words:
+            result.append({"atMs": int(match.group(1)), "words": words})
+    return result
+
+
+def is_sounding(character: str) -> bool:
+    return canonical(character) != ""
+
+
+def spread_times(text: str, sounding: list[list[int]]) -> list[list[int]] | None:
+    """One [start, duration] per character of `text` from one per sounding
+    character (spaces and punctuation are sung in no time, where the previous
+    character ends), or None when the counts disagree."""
+    result: list[list[int]] = []
+    queue = list(sounding)
+    end = 0
+    for character in text:
+        if is_sounding(character):
+            if not queue:
+                return None
+            start, length = queue.pop(0)
+            result.append([start, length])
+            end = start + length
+        else:
+            result.append([end, 0])
+    return result if not queue else None
+
+
+def sounding_times(text: str, karaoke: object) -> list[list[int]]:
+    if not isinstance(karaoke, list) or len(karaoke) != len(text):
+        return []
+    return [list(times) for character, times in zip(text, karaoke) if is_sounding(character)]
+
+
+def attach_karaoke(lines: list[dict[str, object]], timed: list[dict[str, object]]) -> None:
+    """Give each line the time of every character, from the word-timed line
+    that starts with it and says the same words. Times are relative to the
+    word-timed line's start, so they still fit when the line is moved onto a
+    different recording."""
+    for line in lines:
+        text = str(line.get("text", ""))
+        best = None
+        for entry in timed:
+            distance = abs(int(entry["atMs"]) - int(line["atMs"]))
+            if distance <= KARAOKE_TOLERANCE_MS and (best is None or distance < best[0]):
+                best = (distance, entry)
+        if best is None:
+            continue
+        entry = best[1]
+        sounding = []
+        for start, length, word in entry["words"]:
+            letters = [character for character in word if is_sounding(character)]
+            for number, _ in enumerate(letters):
+                share = length // len(letters)
+                sounding.append([start - int(entry["atMs"]) + number * share, share])
+        spoken = "".join(word for _, _, word in entry["words"])
+        if not same_words(canonical(spoken), canonical(text)) and canonical(spoken) != canonical(text):
+            continue
+        times = spread_times(text, sounding)
+        if times:
+            line["karaoke"] = times
+
+
+def copy_karaoke(line: dict[str, object], other: dict[str, object]) -> None:
+    """Carry character times across to a line that says the same words in as
+    many characters (traditional for simplified, one for one)."""
+    if line.get("karaoke"):
+        return
+    sounding = sounding_times(str(other.get("text", "")), other.get("karaoke"))
+    times = spread_times(str(line.get("text", "")), sounding) if sounding else None
+    if times:
+        line["karaoke"] = times
+
+
 def attach_secondary(
     lines: list[dict[str, object]], secondary: list[dict[str, object]], key: str
 ) -> None:
@@ -493,6 +582,7 @@ def netease_payload(song: dict[str, object], data: object) -> dict[str, object] 
         return None
     attach_secondary(lines, strip_leading_credits(parse_lrc(section("tlyric"))), "translation")
     attach_secondary(lines, strip_leading_credits(parse_lrc(section("romalrc"))), "romanization")
+    attach_karaoke(lines, parse_yrc(section("yrc")))
 
     song_id = song.get("id") if isinstance(song.get("id"), int) else None
     artists = song.get("artists")
@@ -519,7 +609,7 @@ def netease_payload(song: dict[str, object], data: object) -> dict[str, object] 
 
 
 def netease_lyric_data(song_id: int, opener: Callable[..., Any]) -> object | None:
-    query = urllib.parse.urlencode({"id": song_id, "lv": -1, "kv": -1, "tv": -1, "rv": -1})
+    query = urllib.parse.urlencode({"id": song_id, "lv": -1, "kv": -1, "tv": -1, "rv": -1, "yv": -1})
     request = urllib.request.Request(f"{NETEASE_LYRIC_URL}?{query}", headers=netease_headers())
     return read_json(request, opener)
 
@@ -549,6 +639,31 @@ def same_words(left: str, right: str) -> bool:
     return len(short) >= 4 and (same_form(short, long[:len(short)]) or same_form(short, long[-len(short):]))
 
 
+def close_text(left: str, right: str) -> bool:
+    """Nearly the same words: another script, or a kana written out or left
+    off (暮し and 暮らし, わたし and 私), but no more than that."""
+    if not left or not right:
+        return False
+    if left == right or same_form(left, right):
+        return True
+    if abs(len(left) - len(right)) > max(1, len(left) // 6):
+        return False
+    return SequenceMatcher(None, left, right).ratio() >= 0.75
+
+
+def joined_span(key: str, keys: list[str], start: int) -> list[int] | None:
+    """The run of the other source's lines, from `start`, that together say
+    this line: one line, or a line it splits in two or three."""
+    joined = ""
+    for end in range(start, min(len(keys), start + 3)):
+        joined += keys[end]
+        if close_text(key, joined):
+            return list(range(start, end + 1))
+        if len(joined) > len(key) + 2:
+            break
+    return None
+
+
 def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]) -> int:
     """Copy translation and romanization from `other` onto the lines that say
     the same words, walking both in order. Returns how many lines matched."""
@@ -563,7 +678,8 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
         # source repeats in a different order still carries the same extras.
         nearby = range(position, min(len(other), position + 12))
         for candidate in [*nearby, *(index for index in range(len(other)) if index not in nearby)]:
-            if same_words(key, keys[candidate]):
+            span = joined_span(key, keys, candidate)
+            if span is None and same_words(key, keys[candidate]):
                 # A line the other source splits in two: take the lines that
                 # follow for as long as they continue it, so the extras cover
                 # the whole line rather than its first half.
@@ -576,12 +692,15 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
                         break
                     span.append(span[-1] + 1)
                     rest = rest[len(following):]
+            if span is not None:
                 # The lyrics' own translation, from a bilingual file, wins.
                 for field in ("translation", "romanization"):
                     parts = [str(other[index].get(field) or "") for index in span]
                     if any(parts) and not line.get(field):
                         line[field] = " ".join(part for part in parts if part)
                 matched += 1
+                if len(span) == 1:
+                    copy_karaoke(line, other[candidate])
                 placed[number] = (span[0], span[-1])
                 position = span[-1] + 1
                 break
@@ -608,6 +727,7 @@ def align_by_text(lines: list[dict[str, object]], other: list[dict[str, object]]
             value = other[candidate].get(field)
             if value and not line.get(field):
                 line[field] = value
+        copy_karaoke(line, other[candidate])
         placed[number] = (candidate, candidate)
         matched += 1
     return matched

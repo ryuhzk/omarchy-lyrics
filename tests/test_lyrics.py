@@ -316,6 +316,21 @@ class JellyfinTests(unittest.TestCase):
         self.assertEqual([line["text"] for line in lyrics.strip_leading_credits(lines)],
                          ["Title - Artist", "words"])
 
+    def test_word_times_become_times_per_character(self):
+        timed = lyrics.parse_yrc("[1000,900](1000,300,0)ab(1300,200,0)c (1500,400,0)d")
+        lines = [{"atMs": 1100, "text": "abc d"}]
+        lyrics.attach_karaoke(lines, timed)
+        self.assertEqual(lines[0]["karaoke"], [[0, 150], [150, 150], [300, 200], [500, 0], [500, 400]])
+
+    def test_character_times_carry_over_to_a_matching_line(self):
+        other = {"text": "ab cd", "karaoke": [[0, 1], [1, 1], [2, 0], [2, 1], [3, 1]]}
+        line = {"text": "AB,CD"}
+        lyrics.copy_karaoke(line, other)
+        self.assertEqual(line["karaoke"], [[0, 1], [1, 1], [2, 0], [2, 1], [3, 1]])
+        mismatch = {"text": "abc"}
+        lyrics.copy_karaoke(mismatch, other)
+        self.assertNotIn("karaoke", mismatch)
+
     def test_chinese_readings_pair_one_syllable_per_character(self):
         segments = lyrics.ruby_segments("\u6211\u6068 \u6211 Wo...", "o han o WOO")
         self.assertEqual(segments, [["\u6211", "o"], ["\u6068", "han"], [" ", ""], ["\u6211", "o"],

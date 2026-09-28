@@ -253,6 +253,19 @@ Item {
     return result
   }
 
+  // [start, duration] per character of a line, in ms from the line's start;
+  // anything that does not have one pair per character is dropped whole.
+  function safeKaraoke(value, length) {
+    if (!Array.isArray(value) || value.length !== length || length > 400) return []
+    var result = []
+    for (var i = 0; i < value.length; i++) {
+      var pair = value[i]
+      if (!Array.isArray(pair) || !isFinite(Number(pair[0])) || !isFinite(Number(pair[1]))) return []
+      result.push([Math.max(0, Number(pair[0])), Math.max(0, Number(pair[1]))])
+    }
+    return result
+  }
+
   function applyResponse(raw, exitCode) {
     if (fetchProcess.serial !== requestSerial || fetchProcess.trackKey !== trackKey) return
     try {
@@ -274,7 +287,8 @@ Item {
           translation: String(line.translation || "").slice(0, 4096),
           romanization: String(line.romanization || "").slice(0, 4096),
           ruby: safeRuby(line.ruby),
-          rubyScript: line.rubyScript === "kana" ? "kana" : "latin"
+          rubyScript: line.rubyScript === "kana" ? "kana" : "latin",
+          karaoke: safeKaraoke(line.karaoke, String(line.text || "").length)
         })
       }
       lines = safeLines

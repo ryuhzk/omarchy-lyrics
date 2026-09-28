@@ -42,6 +42,17 @@ PanelWindow {
   // Chinese one. Readings and romanization share the Japanese face, whose
   // Latin is proportional.
   readonly property string readingFamily: "Noto Sans CJK JP"
+
+  // Karaoke colours. What is still to be sung is white, which a dark shadow
+  // keeps readable on any wallpaper or window; what has been sung takes the
+  // theme's accent as a glossy gradient, lighter at the top, and leaves a
+  // soft glow of it behind.
+  readonly property color unsungColor: Qt.rgba(1, 1, 1, 0.92)
+  readonly property color sungTop: Qt.lighter(Color.accent, 1.6)
+  readonly property color sungBottom: Color.accent
+  readonly property color sungReading: Qt.lighter(Color.accent, 1.35)
+  readonly property color glowColor: Qt.lighter(Color.accent, 1.25)
+  readonly property color quietColor: Qt.rgba(1, 1, 1, 0.8)
   function familyFor(text) {
     return /[\u3040-\u30ff]/.test(String(text || "")) ? "Noto Sans CJK JP" : "Noto Sans CJK SC"
   }
@@ -78,13 +89,78 @@ PanelWindow {
   // backend could pair them; then only the translation is left for underneath.
   readonly property var rubyPairs: lyricsService && index >= 0 && index < lines.length
     ? lyricsService.rubyFor(lines[index]) : []
-  // Furigana leaves the romanization to its own line; a syllable over each
-  // Chinese character already is the romanization.
-  readonly property bool rubyIsKana: lyricsService && index >= 0 && index < lines.length
-    ? lines[index].rubyScript === "kana" : false
-  property bool shownRubyIsKana: false
+  // Japanese pairs carry romaji as a third part, set under each character.
+  // Read from what is on screen rather than from the line index, which can
+  // move on a moment before or after the pairs themselves.
+  readonly property bool shownRubyIsKana: shownRuby.some(function(pair) { return String(pair[2] || "") !== "" })
   readonly property string besideRubyText: !intro && lyricsService && index >= 0 && index < lines.length
     ? lyricsService.translationFor(lines[index]) : ""
+
+  // Karaoke: when each character of the line has a time, a brighter colour
+  // sweeps across them as they are sung. A line with no readings to set over
+  // it still needs a column per character for that, without the readings.
+  readonly property var karaoke: !intro && index >= 0 && index < lines.length
+    && Array.isArray(lines[index].karaoke) ? lines[index].karaoke : []
+  readonly property int lineAtMs: !intro && index >= 0 && index < lines.length ? Number(lines[index].atMs) || 0 : 0
+  readonly property var displayPairs: rubyPairs.length > 0 ? rubyPairs
+    : karaoke.length > 0 ? String(currentText).split("").map(function(character) { return [character, "", ""] })
+    : []
+  property var shownKaraoke: []
+  property int shownLineAtMs: 0
+  // Where each pair starts in the line's characters, and when it is sung:
+  // [first character, start ms, end ms], relative to the line.
+  readonly property var shownSpans: {
+    var spans = []
+    var offset = 0
+    for (var i = 0; i < shownRuby.length; i++) {
+      var length = String(shownRuby[i][0]).length
+      var start = -1
+      var end = -1
+      for (var c = offset; c < offset + length && c < shownKaraoke.length; c++) {
+        var times = shownKaraoke[c]
+        if (times[1] <= 0) continue
+        if (start < 0) start = times[0]
+        end = Math.max(end, times[0] + times[1])
+      }
+      spans.push([offset, start, end])
+      offset += length
+    }
+    return spans
+  }
+  readonly property bool shownHasReadings: shownRuby.some(function(pair) { return pair[1] !== "" || pair[2] !== "" })
+  readonly property bool sweeping: shownKaraoke.length > 0 && rubyShown
+
+  // The position inside the line, advanced every frame between the player's
+  // quarter-second updates so the sweep glides instead of stepping.
+  property real clockMs: 0
+  property real sampledPositionMs: 0
+  property real sampledAtMs: 0
+  Connections {
+    target: root.lyricsService
+    function onPlaybackPositionMsChanged() {
+      root.sampledPositionMs = root.lyricsService.playbackPositionMs + root.lyricsService.overlayOffsetMs
+      root.sampledAtMs = Date.now()
+    }
+  }
+  FrameAnimation {
+    running: root.sweeping && root.visible
+    onTriggered: {
+      var playing = root.lyricsService && root.lyricsService.isPlaying
+      var now = root.sampledPositionMs + (playing ? Math.min(1000, Date.now() - root.sampledAtMs) : 0)
+      root.clockMs = now - root.shownLineAtMs
+    }
+  }
+
+  // How far the sweep has got through pair `number`: 0 before, 1 after.
+  // Keyed on the times alone, not on whether the row is laid out yet: for the
+  // moment before it is, the whole line would otherwise flash as sung.
+  function sungFraction(number) {
+    if (shownKaraoke.length === 0 || number >= shownSpans.length) return 1
+    var span = shownSpans[number]
+    if (span[1] < 0) return clockMs >= 0 ? 1 : 0
+    if (span[2] <= span[1]) return clockMs >= span[1] ? 1 : 0
+    return Math.max(0, Math.min(1, (clockMs - span[1]) / (span[2] - span[1])))
+  }
 
   // Shown only while something is actually playing and actually has lyrics.
   // A paused track keeps its lyrics loaded, so `isPlaying` is what separates
@@ -120,8 +196,9 @@ PanelWindow {
     if (shownCurrent === "" || currentText === "") {
       shownCurrent = currentText
       shownSecondary = secondaryText
-      shownRuby = rubyPairs
-      shownRubyIsKana = rubyIsKana
+      shownRuby = displayPairs
+      shownKaraoke = karaoke
+      shownLineAtMs = lineAtMs
       shownBesideRuby = besideRubyText
       shownNext = nextText
       return
@@ -131,34 +208,42 @@ PanelWindow {
   onNextTextChanged: if (shownCurrent === "") shownNext = nextText
   // A setting switched mid-line takes effect at once, without a transition.
   onSecondaryTextChanged: if (!lineChange.running) shownSecondary = secondaryText
-  onRubyPairsChanged: if (!lineChange.running) {
-    shownRuby = rubyPairs
-    shownRubyIsKana = rubyIsKana
+  onDisplayPairsChanged: if (!lineChange.running) {
+    shownRuby = displayPairs
+    shownKaraoke = karaoke
+    shownLineAtMs = lineAtMs
   }
   onBesideRubyTextChanged: if (!lineChange.running) shownBesideRuby = besideRubyText
 
   SequentialAnimation {
     id: lineChange
 
-    // Out and upwards, the direction the words are travelling anyway.
+    // Out and upwards, the direction the words are travelling anyway,
+    // shrinking a little as it goes.
     ParallelAnimation {
-      NumberAnimation { target: lineColumn; property: "opacity"; to: 0; duration: 130; easing.type: Easing.InCubic }
-      NumberAnimation { target: lineColumn; property: "y"; to: -10; duration: 130; easing.type: Easing.InCubic }
+      NumberAnimation { target: lineColumn; property: "opacity"; to: 0; duration: 160; easing.type: Easing.InCubic }
+      NumberAnimation { target: lineColumn; property: "y"; to: -root.fontSize * 0.6; duration: 160; easing.type: Easing.InCubic }
+      NumberAnimation { target: lineColumn; property: "scale"; to: 0.96; duration: 160; easing.type: Easing.InCubic }
     }
     ScriptAction {
       script: {
         root.shownCurrent = root.currentText
         root.shownSecondary = root.secondaryText
-        root.shownRuby = root.rubyPairs
-        root.shownRubyIsKana = root.rubyIsKana
+        root.shownRuby = root.displayPairs
+        root.shownKaraoke = root.karaoke
+        root.shownLineAtMs = root.lineAtMs
+        root.clockMs = 0
         root.shownBesideRuby = root.besideRubyText
         root.shownNext = root.nextText
-        lineColumn.y = 10
+        lineColumn.y = root.fontSize * 0.5
+        lineColumn.scale = 1
       }
     }
+    // In from below with a little overshoot; the characters themselves
+    // drop in one after another (see the pairs below).
     ParallelAnimation {
-      NumberAnimation { target: lineColumn; property: "opacity"; to: 1; duration: 260; easing.type: Easing.OutCubic }
-      NumberAnimation { target: lineColumn; property: "y"; to: 0; duration: 260; easing.type: Easing.OutCubic }
+      NumberAnimation { target: lineColumn; property: "opacity"; to: 1; duration: 220; easing.type: Easing.OutCubic }
+      NumberAnimation { target: lineColumn; property: "y"; to: 0; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
     }
   }
 
@@ -194,6 +279,7 @@ PanelWindow {
     Column {
       id: lineColumn
       width: parent.width
+      transformOrigin: root.atRight ? Item.BottomRight : Item.Bottom
       spacing: Math.round(root.fontSize * 0.18)
 
       // A soft shadow rather than an outline or a bevel: it separates the
@@ -204,8 +290,8 @@ PanelWindow {
       layer.enabled: true
       layer.effect: MultiEffect {
         shadowEnabled: true
-        shadowColor: Qt.rgba(0, 0, 0, 0.55)
-        shadowBlur: 0.45
+        shadowColor: Qt.rgba(0, 0, 0, 0.7)
+        shadowBlur: 0.5
         shadowVerticalOffset: 1
         shadowHorizontalOffset: 0
         blurMax: 16
@@ -225,14 +311,30 @@ PanelWindow {
             id: pair
 
             required property var modelData
-            leftPadding: Math.round(root.fontSize * 0.06)
+            required property int index
+            // 0 -> 1 as this part of the line is sung; 1 throughout when the
+            // line has no character times, so it simply lights up whole.
+            readonly property real sung: root.sungFraction(index)
+            readonly property bool singing: root.sweeping && sung > 0 && sung < 1
+            leftPadding: root.shownHasReadings ? Math.round(root.fontSize * 0.06) : 0
             rightPadding: leftPadding
+
+            // Drops in a beat after the pair before it when the line arrives.
+            property real entered: 0
+            opacity: entered
+            transform: Translate { y: (1 - pair.entered) * root.fontSize * 0.45 }
+            SequentialAnimation on entered {
+              running: true
+              PauseAnimation { duration: Math.min(pair.index, 24) * 18 }
+              NumberAnimation { from: 0; to: 1; duration: 360; easing.type: Easing.OutBack; easing.overshoot: 2 }
+            }
 
             // Always takes its height, reading or not, so every character in
             // the row stands on the same baseline. (A positioner skips items
             // of zero width, which an empty Text is.)
             Item {
               anchors.horizontalCenter: parent.horizontalCenter
+              visible: root.shownHasReadings
               width: Math.max(1, reading.implicitWidth)
               height: Math.round(root.fontSize * 0.5)
 
@@ -241,19 +343,83 @@ PanelWindow {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 text: pair.modelData[1]
-                color: Qt.alpha(Color.accent, 0.9)
+                color: pair.sung > 0 ? root.sungReading : Qt.alpha(root.unsungColor, 0.8)
+                Behavior on color { ColorAnimation { duration: 220 } }
                 font.family: root.readingFamily
                 font.pixelSize: Math.round(root.fontSize * 0.4)
               }
             }
 
-            Text {
+            // The character twice: dim underneath, bright on top, the bright
+            // one revealed left to right as it is sung. The character being
+            // sung swells a little and springs back when it is done.
+            Item {
+              id: glyph
               anchors.horizontalCenter: parent.horizontalCenter
-              text: pair.modelData[0]
-              color: Color.accent
-              font.family: root.familyFor(root.shownCurrent)
-              font.pixelSize: root.fontSize
-              font.weight: Font.Bold
+              width: base.implicitWidth
+              height: base.implicitHeight
+              scale: pair.singing ? 1.16 : 1
+              Behavior on scale { SpringAnimation { spring: 4; damping: 0.26; epsilon: 0.002 } }
+              transformOrigin: Item.Bottom
+
+              // The glow: none before the character is reached, brightest
+              // while it is sung, a softer trail once it has been.
+              layer.enabled: pair.sung > 0
+              layer.effect: MultiEffect {
+                shadowEnabled: true
+                shadowColor: root.glowColor
+                shadowBlur: 1
+                shadowOpacity: pair.singing ? 1 : 0.45
+                shadowHorizontalOffset: 0
+                shadowVerticalOffset: 0
+                blurMax: 28
+                Behavior on shadowOpacity { NumberAnimation { duration: 260 } }
+              }
+
+              // Still to be sung.
+              Text {
+                id: base
+                text: pair.modelData[0]
+                color: root.sweeping ? root.unsungColor : "transparent"
+                font.family: root.familyFor(root.shownCurrent)
+                font.pixelSize: root.fontSize
+                font.weight: Font.Bold
+              }
+
+              // Sung: the accent gradient in the character's shape, revealed
+              // left to right. A line without character times is sung whole.
+              Item {
+                width: base.width * pair.sung
+                height: base.height
+                clip: true
+
+                Rectangle {
+                  id: gloss
+                  width: base.width
+                  height: base.height
+                  visible: false
+                  layer.enabled: true
+                  gradient: Gradient {
+                    GradientStop { position: 0.15; color: root.sungTop }
+                    GradientStop { position: 0.85; color: root.sungBottom }
+                  }
+                }
+
+                Text {
+                  id: shape
+                  text: pair.modelData[0]
+                  font: base.font
+                  visible: false
+                  layer.enabled: true
+                }
+
+                MultiEffect {
+                  anchors.fill: gloss
+                  source: gloss
+                  maskEnabled: true
+                  maskSource: shape
+                }
+              }
             }
 
             // Japanese: the romaji of this part right under it.
@@ -267,7 +433,8 @@ PanelWindow {
                 id: romaji
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: pair.modelData[2] || ""
-                color: Qt.alpha(Color.accent, 0.85)
+                color: pair.sung > 0 ? root.sungReading : Qt.alpha(root.unsungColor, 0.8)
+                Behavior on color { ColorAnimation { duration: 220 } }
                 font.family: root.readingFamily
                 font.pixelSize: Math.round(root.fontSize * 0.42)
                 font.weight: Font.Medium
@@ -299,7 +466,7 @@ PanelWindow {
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
-        text: root.rubyShown ? "" : root.shownSecondary
+        text: root.rubyShown && root.shownHasReadings ? "" : root.shownSecondary
         color: Qt.alpha(Color.accent, 0.85)
         font.family: root.readingFamily
         font.pixelSize: Math.round(root.fontSize * 0.5)
@@ -314,7 +481,7 @@ PanelWindow {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownBesideRuby
-        color: Qt.alpha(Color.accent, 0.72)
+        color: root.quietColor
         font.family: root.familyFor(root.shownBesideRuby)
         font.pixelSize: Math.round(root.fontSize * 0.52)
         wrapMode: Text.WordWrap
@@ -327,7 +494,7 @@ PanelWindow {
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
         text: root.shownNext
         topPadding: Math.round(root.fontSize * 0.22)
-        color: Qt.alpha(Color.accent, 0.45)
+        color: Qt.alpha(root.unsungColor, 0.5)
         font.family: root.familyFor(root.shownNext)
         font.pixelSize: Math.round(root.fontSize * 0.62)
         font.weight: Font.Medium
