@@ -47,11 +47,22 @@ PanelWindow {
     return String(lines[position].text || "")
   }
 
-  readonly property string currentText: lineAt(index)
+  // Before the first line - the intro, or while the lyrics are still being
+  // looked up - the title stands where the lyric will be and the artist under
+  // it, so the corner says what is playing instead of staying blank. A track
+  // that turned out to have no lyrics does not keep its title up for the
+  // whole song.
+  readonly property bool intro: lyricsService !== null
+    && lyricsService.hasMedia
+    && index < 0
+    && (lines.length > 0 || lyricsService.lyricsStatus === "loading")
+
+  readonly property string currentText: intro ? lyricsService.title : lineAt(index)
   readonly property string nextText: lineAt(index + 1)
   // The translation or romanization of the line being sung, directly under it.
-  readonly property string secondaryText: lyricsService && index >= 0 && index < lines.length
-    ? lyricsService.secondaryFor(lines[index]) : ""
+  readonly property string secondaryText: intro ? lyricsService.artist
+    : lyricsService && index >= 0 && index < lines.length
+      ? lyricsService.secondaryFor(lines[index]) : ""
   // Each syllable of the romanization over the characters it spells, when the
   // backend could pair them; then only the translation is left for underneath.
   readonly property var rubyPairs: lyricsService && index >= 0 && index < lines.length
@@ -64,7 +75,7 @@ PanelWindow {
   // "singing along" from "left the music open".
   readonly property bool wanted: lyricsService
     && lyricsService.isPlaying
-    && lines.length > 0
+    && (lines.length > 0 || intro)
     && currentText !== ""
 
   // The window itself stays mapped while fading, or the fade would have
