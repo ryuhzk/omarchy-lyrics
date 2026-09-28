@@ -324,11 +324,12 @@ class JellyfinTests(unittest.TestCase):
     def test_japanese_kanji_take_the_syllables_between_kana(self):
         # 夢ならば / 以上傷つく: kanji runs take whatever the kana leave them.
         self.assertEqual(lyrics.ruby_segments("\u5922\u306a\u3089\u3070", "yu me na ra ba"),
-                         [["\u5922", "\u3086\u3081"], ["\u306a", ""], ["\u3089", ""], ["\u3070", ""]])
+                         [["\u5922", "\u3086\u3081", "yume"], ["\u306a", "", "na"], ["\u3089", "", "ra"],
+                          ["\u3070", "", "ba"]])
         segments = lyrics.ruby_segments("\u304d\u3063\u3068\u4ee5\u4e0a\u50b7\u3064\u304f",
                                         "ki tto i jyo u ki zu tsu ku")
         # 以上傷 -> いじょうきず
-        self.assertEqual(segments[2], ["\u4ee5\u4e0a\u50b7", "\u3044\u3058\u3087\u3046\u304d\u305a"])
+        self.assertEqual(segments[2], ["\u4ee5\u4e0a\u50b7", "\u3044\u3058\u3087\u3046\u304d\u305a", "ijyoukizu"])
 
     def test_readings_that_do_not_fit_the_line_are_left_out(self):
         self.assertIsNone(lyrics.ruby_segments("\u6211\u6068", "o han o gong"))

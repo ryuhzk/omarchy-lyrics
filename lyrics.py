@@ -1192,9 +1192,10 @@ def ruby_segments(text: object, romanization: object) -> list[list[str]] | None:
     """Pair each part of a line with its reading, or None when the syllables
     cannot be paired with the words with confidence.
 
-    Japanese reads like furigana: kana over the kanji and nothing over the
-    kana, whose sound is already written; the romanization runs underneath as
-    a line of its own. Chinese has a syllable over each character instead."""
+    Japanese gets three tiers, [text, kana, romaji]: furigana over the kanji
+    (nothing over kana, whose sound is already written) and each part's
+    romaji right under it. Chinese has [text, syllable], a syllable over each
+    character."""
     aligned = align_reading(text, romanization)
     if aligned is None:
         return None
@@ -1202,7 +1203,7 @@ def ruby_segments(text: object, romanization: object) -> list[list[str]] | None:
     segments = []
     for surface, kind, _, spelled in aligned:
         if japanese:
-            segments.append([surface, romaji_to_kana(spelled) if kind == "han" else ""])
+            segments.append([surface, romaji_to_kana(spelled) if kind == "han" else "", "".join(spelled)])
         else:
             segments.append([surface, " ".join(spelled)])
     return segments if len(segments) > 1 else None

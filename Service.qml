@@ -247,7 +247,8 @@ Item {
     for (var i = 0; i < value.length && i < 200; i++) {
       var pair = value[i]
       if (!Array.isArray(pair) || pair.length < 2) return []
-      result.push([String(pair[0] || "").slice(0, 64), String(pair[1] || "").slice(0, 64)])
+      result.push([String(pair[0] || "").slice(0, 64), String(pair[1] || "").slice(0, 64),
+                   String(pair[2] || "").slice(0, 64)])
     }
     return result
   }

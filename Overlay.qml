@@ -185,7 +185,7 @@ PanelWindow {
     anchors.rightMargin: root.atRight ? Math.round(root.fontSize * 1.6) : 0
     anchors.bottom: parent.bottom
     anchors.bottomMargin: root.bottomMargin
-    width: root.atRight ? Math.min(parent.width * 0.42, root.fontSize * 32) : parent.width * 0.9
+    width: root.atRight ? Math.min(parent.width * 0.6, root.fontSize * 48) : parent.width * 0.9
     height: lineColumn.implicitHeight
 
     opacity: root.wanted ? 1 : 0
@@ -225,7 +225,7 @@ PanelWindow {
             id: pair
 
             required property var modelData
-            leftPadding: root.shownRubyIsKana ? 0 : Math.round(root.fontSize * 0.06)
+            leftPadding: Math.round(root.fontSize * 0.06)
             rightPadding: leftPadding
 
             // Always takes its height, reading or not, so every character in
@@ -255,6 +255,24 @@ PanelWindow {
               font.pixelSize: root.fontSize
               font.weight: Font.Bold
             }
+
+            // Japanese: the romaji of this part right under it.
+            Item {
+              anchors.horizontalCenter: parent.horizontalCenter
+              visible: root.shownRubyIsKana
+              width: Math.max(1, romaji.implicitWidth)
+              height: romaji.implicitHeight
+
+              Text {
+                id: romaji
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: pair.modelData[2] || ""
+                color: Qt.alpha(Color.accent, 0.85)
+                font.family: root.readingFamily
+                font.pixelSize: Math.round(root.fontSize * 0.42)
+                font.weight: Font.Medium
+              }
+            }
           }
         }
       }
@@ -281,7 +299,7 @@ PanelWindow {
       Text {
         width: parent.width
         horizontalAlignment: root.atRight ? Text.AlignRight : Text.AlignHCenter
-        text: root.rubyShown && !root.shownRubyIsKana ? "" : root.shownSecondary
+        text: root.rubyShown ? "" : root.shownSecondary
         color: Qt.alpha(Color.accent, 0.85)
         font.family: root.readingFamily
         font.pixelSize: Math.round(root.fontSize * 0.5)
