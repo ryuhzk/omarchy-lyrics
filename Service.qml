@@ -45,6 +45,13 @@ Item {
   property int lastMprisPositionMs: -1
   property int lastMprisChangedAtMs: 0
   property string positionMode: "estimated"
+  // The shell's MPRIS position runs on from the last seek it heard about, so a
+  // player that restarts a track (repeat one) or seeks without saying so
+  // leaves it counting past the end while the lyrics sit on the last line.
+  // The player is asked directly every couple of seconds, and the difference
+  // is applied until it is asked again.
+  property real positionCorrectionMs: 0
+  property real lastReportedMs: -1
 
   readonly property string pluginDir: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
@@ -191,6 +198,29 @@ Item {
     lastMprisChangedAtMs = now
     lastTickMs = now
     positionMode = observed > 0 ? "mpris" : "estimated"
+    positionCorrectionMs = 0
+    lastReportedMs = -1
+    Qt.callLater(probePosition)
+  }
+
+  function probePosition() {
+    var player = activePlayer
+    if (positionProbe.running || !player || !player.positionSupported || !player.dbusName) return
+    positionProbe.command = ["gdbus", "call", "--session", "--dest", String(player.dbusName),
+      "--object-path", "/org/mpris/MediaPlayer2", "--method", "org.freedesktop.DBus.Properties.Get",
+      "org.mpris.MediaPlayer2.Player", "Position"]
+    positionProbe.running = true
+  }
+
+  // "(<int64 73108000>,)": microseconds.
+  function applyProbedPosition(raw) {
+    var match = /(-?\d+)>,?\)\s*$/.exec(String(raw || "").trim())
+    var player = activePlayer
+    if (!match || !player || !player.positionSupported) return
+    var truth = Math.max(0, Number(match[1]) / 1000)
+    var reported = Math.round(Number(player.position) * 1000)
+    var difference = truth - reported
+    positionCorrectionMs = Math.abs(difference) > 300 ? difference : 0
   }
 
   function requestLyrics(refresh, choose) {
@@ -317,8 +347,14 @@ Item {
       return
     }
 
-    var observed = player.positionSupported
-      ? Math.max(0, Math.round(Number(player.position) * 1000)) : -1
+    var reported = player.positionSupported ? Math.round(Number(player.position) * 1000) : -1
+    // A jump the shell did hear about makes the old correction wrong.
+    if (reported >= 0 && lastReportedMs >= 0 && Math.abs(reported - lastReportedMs - elapsed) > 1500) {
+      positionCorrectionMs = 0
+      Qt.callLater(probePosition)
+    }
+    lastReportedMs = reported
+    var observed = reported >= 0 ? Math.max(0, reported + positionCorrectionMs) : -1
     if (observed >= 0 && (lastMprisPositionMs < 0 || Math.abs(observed - lastMprisPositionMs) >= 50)) {
       playbackPositionMs = observed
       lastMprisPositionMs = observed
@@ -409,6 +445,22 @@ Item {
       required property var modelData
       target: modelData
       function onIsPlayingChanged() { root.playerRevision += 1 }
+    }
+  }
+
+  Timer {
+    interval: 2000
+    running: root.isPlaying
+    repeat: true
+    onTriggered: root.probePosition()
+  }
+
+  Process {
+    id: positionProbe
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyProbedPosition(text)
     }
   }
 
