@@ -43,16 +43,16 @@ PanelWindow {
   // Latin is proportional.
   readonly property string readingFamily: "Noto Sans CJK JP"
 
-  // Karaoke colours. What is still to be sung is white, which a dark shadow
-  // keeps readable on any wallpaper or window; what has been sung takes the
-  // theme's accent as a glossy gradient, lighter at the top, and leaves a
-  // soft glow of it behind.
-  readonly property color unsungColor: Qt.rgba(1, 1, 1, 0.92)
+  // Karaoke colours. What is still to be sung is the theme's own text colour,
+  // dark on a light theme and light on a dark one, so it reads without
+  // leaning on a heavy shadow; what has been sung takes the theme's accent as
+  // a glossy gradient, lighter at the top.
+  readonly property color unsungColor: Qt.alpha(Color.foreground, 0.9)
   readonly property color sungTop: Qt.lighter(Color.accent, 1.6)
   readonly property color sungBottom: Color.accent
   readonly property color sungReading: Qt.lighter(Color.accent, 1.35)
   readonly property color glowColor: Qt.lighter(Color.accent, 1.25)
-  readonly property color quietColor: Qt.rgba(1, 1, 1, 0.8)
+  readonly property color quietColor: Qt.alpha(Color.foreground, 0.72)
   function familyFor(text) {
     return /[\u3040-\u30ff]/.test(String(text || "")) ? "Noto Sans CJK JP" : "Noto Sans CJK SC"
   }
@@ -290,8 +290,8 @@ PanelWindow {
       layer.enabled: true
       layer.effect: MultiEffect {
         shadowEnabled: true
-        shadowColor: Qt.rgba(0, 0, 0, 0.7)
-        shadowBlur: 0.5
+        shadowColor: Qt.rgba(0, 0, 0, 0.18)
+        shadowBlur: 0.2
         shadowVerticalOffset: 1
         shadowHorizontalOffset: 0
         blurMax: 16
@@ -362,14 +362,14 @@ PanelWindow {
               Behavior on scale { SpringAnimation { spring: 4; damping: 0.26; epsilon: 0.002 } }
               transformOrigin: Item.Bottom
 
-              // The glow: none before the character is reached, brightest
-              // while it is sung, a softer trail once it has been.
-              layer.enabled: pair.sung > 0
+              // A glow on the character being sung only; a trail of glowing
+              // characters behind it blurs the whole line.
+              layer.enabled: pair.singing
               layer.effect: MultiEffect {
                 shadowEnabled: true
                 shadowColor: root.glowColor
-                shadowBlur: 1
-                shadowOpacity: pair.singing ? 1 : 0.45
+                shadowBlur: 0.7
+                shadowOpacity: 0.6
                 shadowHorizontalOffset: 0
                 shadowVerticalOffset: 0
                 blurMax: 28
